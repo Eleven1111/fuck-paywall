@@ -96,23 +96,66 @@ def approve(vault: Vault, hub_id: str, gate: str, **fields) -> dict:
         vault.write_hub_file(hub_id, "final.md", draft)
         if fields.get("canonical_url"):
             meta["canonical_url"] = fields["canonical_url"]
+        if fields.get("canonical_url_en"):
+            meta["canonical_url_en"] = fields["canonical_url_en"]
+        level = fields.get("ai_assist_level") or ("draft_B" if meta.get("draft_mode") == "B" else "edit_only")
+        if level not in ("none", "edit_only", "outline", "assisted_text", "draft_B"):
+            raise GateError("--ai-assist-level 只能是 none|edit_only|outline|assisted_text|draft_B")
+        meta["ai_assist_level"] = level
+        agent_draft = vault.hub_dir(hub_id) / "draft_agent.md"
+        if agent_draft.exists():  # 模式 B：记录 AI 稿 → 终稿的修改对
+            rec = vault.save_edit_diff(hub_id, agent_draft.read_text(encoding="utf-8"), draft, "hub_draft_B")
+            record["edit_ratio"] = rec["edit_ratio"]
         meta["status"] = "final"
     elif gate == "H5":
+        from .adapt import revalidate, write_publish_kit
+
         ids = fields.get("variants") or []
-        variants = {v["variant_id"]: v for v in vault.variants_of(hub_id)}
-        if ids == ["all"]:
+        if not ids:
+            raise GateError("H5 需要 --variants all 或逗号分隔的 variant_id")
+        # 先用作者改后的文字重跑检查
+        variants = {}
+        for v in vault.variants_of(hub_id):
+            if v["status"] in ("published", "retired"):
+                continue
+            v = revalidate(vault, v)
+            vault.save_variant(v)
+            variants[v["variant_id"]] = v
+        all_mode = ids == ["all"]
+        if all_mode:
             ids = [vid for vid, v in variants.items() if v["gate_results"]["passed"]]
+        # 推广帖跟着母体走：母体（如 X Article）没获批就不能放行推广帖
+        approved_now = set(ids) | {x["variant_id"] for x in vault.variants_of(hub_id)
+                                   if x["status"] in ("approved", "published")}
+        orphans = [vid for vid in ids if variants.get(vid, {}).get("parent_variant")
+                   and variants[vid]["parent_variant"] not in approved_now]
+        if orphans and not all_mode:
+            raise GateError(f"{orphans} 是推广帖，它推广的变体还没获批")
+        ids = [vid for vid in ids if vid not in orphans]
+        failed_force = []
         for vid in ids:
             v = variants.get(vid)
             if v is None:
-                raise GateError(f"{hub_id} 没有变体 {vid}")
-            if not v["gate_results"]["passed"] and not fields.get("force"):
-                raise GateError(f"{vid} 没通过平台闸口：{v['gate_results']['failed']}；如坚持用 --force")
+                raise GateError(f"{hub_id} 没有可审批的变体 {vid}")
+            if not v["gate_results"]["passed"]:
+                if not fields.get("force"):
+                    raise GateError(f"{vid} 没通过平台闸口：{v['gate_results']['failed']}；"
+                                    "改 variants/<id>.md 后重试，或用 --force")
+                failed_force.append(vid)
+        for vid in ids:
+            v = variants[vid]
             v["status"] = "approved"
             v["gate_results"]["human_approved_by"] = "author"
             v["gate_results"]["approved_at"] = record["at"]
+            if v.get("edited"):
+                vault.save_edit_diff(vid, v["editable_original"], vault.variant_text(vid) or "",
+                                     f"variant_{v['format']}")
             vault.save_variant(v)
-        record["variants"] = ids
+        prev = (meta["gates"].get("H5") or {}).get("variants", [])
+        record["variants"] = sorted(set(prev) | set(ids))
+        if failed_force:
+            record["forced"] = failed_force
+        record["publish_kit"] = write_publish_kit(vault, hub_id)
 
     meta["gates"][gate] = record
     vault.save_meta(hub_id, meta)

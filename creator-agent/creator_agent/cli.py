@@ -100,12 +100,16 @@ def cmd_review(args):
 
 def cmd_adapt(args):
     v = _vault(args)
-    vs = stages.s6_adapt(v, _llm(v), args.hub, n_x=args.x, n_notes=args.notes)
+    formats = args.formats.split(",") if args.formats else None
+    vs = stages.s6_adapt(v, _llm(v), args.hub, n_x=args.x, n_notes=args.notes, formats=formats)
     for x in vs:
         mark = "✓" if x["gate_results"]["passed"] else f"✗ {x['gate_results']['failed']}"
         print(f"{x['variant_id']}  {mark}")
+    for fmt, why in (v.meta(args.hub).get("skipped_formats") or {}).items():
+        print(f"跳过 {fmt}：{why}")
+    print(f"待审稿件 → hubs/{args.hub}/review_queue.md（正文可直接改 variants/<id>.md）")
     print(f"Substack 发布包 → hubs/{args.hub}/substack_package.md")
-    print(f"审批：`ca approve {args.hub} H5 --variants all`")
+    print(f"审批：`ca approve {args.hub} H5 --variants all`，审批后生成 publish_kit.md")
 
 
 def cmd_approve(args):
@@ -115,11 +119,14 @@ def cmd_approve(args):
         "confirm": args.confirm, "notes": args.notes,
         "quotes_checked": args.quotes_checked, "numbers_checked": args.numbers_checked,
         "ending_ok": args.ending_ok, "override_reason": args.override_reason,
-        "canonical_url": args.canonical_url,
+        "canonical_url": args.canonical_url, "canonical_url_en": args.canonical_url_en,
+        "ai_assist_level": args.ai_assist_level,
         "variants": args.variants.split(",") if args.variants else None, "force": args.force,
     }
     rec = gates.approve(v, args.hub, args.gate, **fields)
     print(f"{args.gate} 已记录：{json.dumps(rec, ensure_ascii=False)}")
+    if args.gate == "H5":
+        print(f"发布包 → {rec['publish_kit']}（全部由你本人发布）")
 
 
 def cmd_published(args):
@@ -147,6 +154,67 @@ def cmd_status(args):
         if args.hub:
             for x in v.variants_of(m["id"]):
                 print(f"  {x['variant_id']}  {x['status']}  {x['schedule']['planned_at']}")
+
+
+def cmd_kit(args):
+    v = _vault(args)
+    from .adapt import write_publish_kit
+
+    print(write_publish_kit(v, args.hub))
+
+
+def cmd_due(args):
+    import datetime as dt
+
+    v = _vault(args)
+    horizon = dt.datetime.now().astimezone() + dt.timedelta(hours=args.hours)
+    rows = [x for x in v.all_variants() if x["status"] == "approved"
+            and dt.datetime.fromisoformat(x["schedule"]["planned_at"]) <= horizon]
+    for x in sorted(rows, key=lambda x: x["schedule"]["planned_at"]):
+        print(f"{x['schedule']['planned_at']}  {x['format']:<14} {x['variant_id']}  → hubs/{x['hub_id']}/publish_kit.md")
+    if not rows:
+        print(f"未来 {args.hours} 小时没有待发布的稿子")
+
+
+def cmd_metrics(args):
+    v = _vault(args)
+    from . import metrics as M
+
+    if args.action == "add":
+        values = {}
+        for kv in args.values:
+            k, _, val = kv.partition("=")
+            values[k] = float(val) if "." in val else int(val)
+        print(json.dumps(M.add_snapshot(v, args.target, values, source="manual"), ensure_ascii=False))
+    elif args.action == "pull-x":
+        r = M.pull_x(v, dry_run=args.dry_run)
+        print(f"{r['posts']} 条已发布的 X 帖子，预估读取费用 ${r['estimated_cost_usd']}，写入 {r['written']} 条快照")
+    elif args.action == "import":
+        n = M.import_csv(v, Path(args.target), source=args.source)
+        print(f"导入 {n} 行")
+
+
+def cmd_report(args):
+    v = _vault(args)
+    from .metrics import channel_report
+
+    print(json.dumps(channel_report(v, args.month), ensure_ascii=False, indent=2))
+
+
+def cmd_retro(args):
+    v = _vault(args)
+    from .retro import build_retro
+
+    r = build_retro(v, _llm(v), args.month)
+    print(f"复盘 → runs/retro_{args.month}.md；R1 候选 {len(r['r1_candidates'])} 条，R2 候选 {len(r['r2_candidates'])} 条")
+
+
+def cmd_retro_approve(args):
+    v = _vault(args)
+    from .retro import approve_retro
+
+    rec = approve_retro(v, args.month, args.r1.split(",") if args.r1 else None, args.note)
+    print(f"H7 已记录：{json.dumps(rec, ensure_ascii=False)}")
 
 
 def cmd_eval(args):
@@ -203,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("hub")
     s.add_argument("--x", type=int, default=5)
     s.add_argument("--notes", type=int, default=5)
+    s.add_argument("--formats", help="逗号分隔：x_post,substack_note,x_thread,x_article,medium_story")
     s.set_defaults(func=cmd_adapt)
 
     s = sub.add_parser("approve", help="记录人工闸口 H1–H5")
@@ -218,6 +287,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ending-ok", action="store_true")
     s.add_argument("--override-reason")
     s.add_argument("--canonical-url")
+    s.add_argument("--canonical-url-en", help="英文版另有母稿时的 canonical")
+    s.add_argument("--ai-assist-level", choices=["none", "edit_only", "outline", "assisted_text", "draft_B"])
     s.add_argument("--variants", help="逗号分隔的 variant_id，或 all")
     s.add_argument("--force", action="store_true")
     s.set_defaults(func=cmd_approve)
@@ -237,6 +308,36 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status", help="查看母稿与变体状态")
     s.add_argument("hub", nargs="?")
     s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("kit", help="重新生成发布包 publish_kit.md")
+    s.add_argument("hub")
+    s.set_defaults(func=cmd_kit)
+
+    s = sub.add_parser("due", help="列出接下来要你手动发布的稿子")
+    s.add_argument("--hours", type=int, default=24)
+    s.set_defaults(func=cmd_due)
+
+    s = sub.add_parser("metrics", help="S8 指标回流（只读）：add 手工录入 / pull-x 拉 X 公开指标 / import CSV")
+    s.add_argument("action", choices=["add", "pull-x", "import"])
+    s.add_argument("target", nargs="?", help="add：variant_id；import：CSV 路径")
+    s.add_argument("values", nargs="*", help="add：key=value，如 impressions=1200 replies=14")
+    s.add_argument("--source", default="csv", help="import 的来源标签，如 substack_export")
+    s.add_argument("--dry-run", action="store_true", help="pull-x：只估算费用")
+    s.set_defaults(func=cmd_metrics)
+
+    s = sub.add_parser("report", help="按平台×体裁汇总指标")
+    s.add_argument("--month", help="如 2026-11")
+    s.set_defaults(func=cmd_report)
+
+    s = sub.add_parser("retro", help="S8 月度复盘")
+    s.add_argument("month", help="如 2026-11")
+    s.set_defaults(func=cmd_retro)
+
+    s = sub.add_parser("retro-approve", help="H7：批准复盘，把 R1 候选写进选题池")
+    s.add_argument("month")
+    s.add_argument("--r1", help="all 或逗号分隔的 variant_id")
+    s.add_argument("--note")
+    s.set_defaults(func=cmd_retro_approve)
 
     s = sub.add_parser("eval", help="在离线测试集上检验评审能否区分好稿和差稿")
     s.set_defaults(func=cmd_eval)

@@ -10,9 +10,8 @@ import yaml
 
 from . import prompts as P
 from .gates import _sha, check, score_angle
-from .lint import URL_RE, lint_draft, x_weighted_length
+from .lint import lint_draft
 from .llm import LLM
-from .utm import with_utm
 from .vault import Vault, VaultError, now_iso
 
 
@@ -357,126 +356,10 @@ def _write_review(vault: Vault, hub_id: str, r: dict) -> None:
 
 
 # =============================================================== S6 平台适配
-def s6_adapt(vault: Vault, llm: LLM, hub_id: str, n_x: int = 5, n_notes: int = 5,
-             start: dt.datetime | None = None) -> list[dict]:
-    meta = vault.meta(hub_id)
-    check(meta, "adapt")
-    final = vault.read_hub_file(hub_id, "final.md")
-    profile = vault.profile()
-    xrules = vault.platform("x")
-    x_limit = int(xrules.get("max_weighted_chars", 280))
-    out = llm.json(
-        stage="adapt",
-        system=P.ADAPT_SYSTEM.format(deltas=json.dumps(profile.get("platform_deltas", {}),
-                                                       ensure_ascii=False)),
-        user=P.ADAPT_USER.format(final=final, n_x=n_x, n_notes=n_notes, x_limit=x_limit,
-                                 x_cjk=x_limit // 2),
-        schema=P.ADAPT_SCHEMA,
-    )
+def s6_adapt(vault: Vault, llm: LLM, hub_id: str, **kw) -> list[dict]:
+    from .adapt import s6_adapt as _impl
 
-    canonical = meta.get("canonical_url") or ""
-    campaign = hub_id
-    ai_level = "draft_B" if meta.get("draft_mode") == "B" else "edit_only"
-    start = start or (dt.datetime.now().astimezone().replace(hour=9, minute=20, second=0, microsecond=0)
-                      + dt.timedelta(days=1))
-    banned_topics = [t.lower() for t in xrules.get("monetization_excluded_topics", [])]
-    variants = []
-
-    for i, p in enumerate(out["x_posts"], 1):
-        vid = f"v_{hub_id}_x_post_{i:02d}"
-        text = p["text"].strip()
-        checks = {
-            "weighted_length": x_weighted_length(text),
-            "within_limit": x_weighted_length(text) <= x_limit,
-            "no_link_in_root": not URL_RE.search(text),
-            "no_hashtags": not re.search(r"(^|\s)#[^\s#]+", text),
-            "no_mentions": not re.search(r"(^|\s)@\w+", text),
-            "cashtags_ok": len(re.findall(r"\$[A-Za-z]{1,6}\b", text)) <= int(xrules.get("max_cashtags_per_post", 1)),
-            "dry_tests": f"{sum([p['visualize'], p['falsify'], p['only_you']])}/3",
-            "dry_at_least_2": sum([p["visualize"], p["falsify"], p["only_you"]]) >= 2,
-            "reply_hook": bool(p["reply_hook"].strip()),
-            "not_monetization_meta": not any(t in text.lower() for t in banned_topics),
-            "no_tk": "TK" not in text,
-            "numbers_in_final": _numbers_in(text, final),
-        }
-        variants.append(_variant(
-            vid, hub_id, "x", "x_post", meta, text, checks,
-            link_url=with_utm(canonical, source="x", medium="post", campaign=campaign, content=vid)
-            if canonical else None,
-            link_placement="none", ai_level=ai_level,
-            planned=start + dt.timedelta(days=(i - 1) * 7 / max(n_x, 1)),
-            extra={"idea": p["idea"], "reply_hook": p["reply_hook"]}, gate="G-XP"))
-
-    for i, n in enumerate(out["notes"], 1):
-        vid = f"v_{hub_id}_substack_note_{i:02d}"
-        text = n["text"].strip()
-        checks = {
-            "self_contained": len(text) > 20,
-            "no_tk": "TK" not in text,
-            "no_hashtags": not re.search(r"(^|\s)#[^\s#]+", text),
-            "numbers_in_final": _numbers_in(text, final),
-        }
-        variants.append(_variant(
-            vid, hub_id, "substack_notes", "substack_note", meta, text, checks,
-            link_url=with_utm(canonical, source="substack", medium="note", campaign=campaign, content=vid)
-            if canonical else None,
-            link_placement="none", ai_level=ai_level,
-            planned=start + dt.timedelta(days=i - 1, hours=4),  # 每天至多一条，同一天不连发
-            extra={"note_type": n["type"]}, gate="G-SN"))
-
-    for v in variants:
-        vault.save_variant(v)
-
-    s = out["substack"]
-    footer = with_utm(canonical, source="substack", medium="email", campaign=campaign,
-                      content="footer") if canonical else "<母稿链接>"
-    package = [f"# Substack 发布包 · {hub_id}", "",
-               "## 标题候选（用原生 A/B 测试，看打开者点击率）"] + [f"- {t}" for t in s["title_variants"]]
-    package += ["", f"## 副标题\n{s['subtitle']}", "", f"## 文末 CTA\n{s['cta']}",
-                "", f"## AI 使用说明（建议放进 post template）\n{profile.get('disclosure_line', '')}",
-                "", f"## 带 UTM 的分享链接\n{footer}", "",
-                "## 发送前清单（G-SS）",
-                "- [ ] 开头 3 段内有一句话答案或明确承诺",
-                "- [ ] 引言不超过全文 15%",
-                "- [ ] 免费部分本身完整；付费墙落在自然停顿处，或选用 freewall / metered paywall",
-                "- [ ] 文中至少链接 1 篇最相关的旧文",
-                "- [ ] 至少一张核心图表或一个核心数字",
-                "- [ ] 结尾不是总结段",
-                "- [ ] 是否发布“How I make this”声明、是否关闭本篇 AI 扫描：由你决定",
-                "", "## 正文（粘贴到 Substack 编辑器）", "", final]
-    vault.write_hub_file(hub_id, "substack_package.md", "\n".join(package))
-    meta["status"] = "adapted"
-    vault.save_meta(hub_id, meta)
-    return variants
-
-
-def _numbers_in(variant_text: str, final: str) -> bool:
-    """变体里的每个数字都必须出现在定稿里：改编不得新增事实（手册 S6）。"""
-    body = URL_RE.sub("", variant_text)
-    nums = re.findall(r"\d+(?:[.,]\d+)?%?", body)
-    return all(n in final for n in nums)
-
-
-def _variant(vid, hub_id, platform, fmt, meta, text, checks, *, link_url, link_placement,
-             ai_level, planned, extra, gate) -> dict:
-    failed = [k for k, v in checks.items() if v is False]
-    return {
-        "variant_id": vid,
-        "hub_id": hub_id,
-        "platform": platform,
-        "format": fmt,
-        "language": meta.get("language", "zh"),
-        "derivation": "atomize",
-        "status": "gated" if not failed else "draft",
-        "body": {"text": text, "char_count": len(text), **extra},
-        "link_policy": {"placement": link_placement, "url": link_url,
-                        "note": "根帖不放链接；如需导流，由你本人在回复里手动贴这条带 UTM 的链接"},
-        "canonical": {"url": meta.get("canonical_url"), "method": "n/a"},
-        "compliance": {"ai_assist_level": ai_level, "automated_interaction": "none"},
-        "schedule": {"planned_at": planned.isoformat(timespec="minutes")},
-        "gate_results": {"gate": gate, "checks": checks, "failed": failed, "passed": not failed},
-        "publish_result": None,
-    }
+    return _impl(vault, llm, hub_id, **kw)
 
 
 # =============================================================== 发布记录（人工发布后）

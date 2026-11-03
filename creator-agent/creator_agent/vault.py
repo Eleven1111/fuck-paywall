@@ -22,6 +22,7 @@ LAYOUT = {
     "voice/stories.md": templates.STORIES_MD,
     "platforms/substack.yaml": templates.PLATFORM_SUBSTACK,
     "platforms/x.yaml": templates.PLATFORM_X,
+    "platforms/medium.yaml": templates.PLATFORM_MEDIUM,
     "backlog/ideas.jsonl": templates.IDEAS_JSONL,
     "evals/README.md": templates.TESTSET_README,
     "evals/testset.jsonl": "",
@@ -242,6 +243,41 @@ class Vault:
         p = self.root / "variants" / f"{variant['variant_id']}.yaml"
         p.write_text(yaml.safe_dump(variant, allow_unicode=True, sort_keys=False), encoding="utf-8")
         return p
+
+    def write_variant_text(self, variant_id: str, text: str) -> Path:
+        p = self.root / "variants" / f"{variant_id}.md"
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def variant_text(self, variant_id: str) -> str | None:
+        p = self.root / "variants" / f"{variant_id}.md"
+        return p.read_text(encoding="utf-8") if p.exists() else None
+
+    def all_variants(self) -> list[dict]:
+        out = []
+        for p in sorted((self.root / "variants").glob("*.yaml")):
+            v = yaml.safe_load(p.read_text(encoding="utf-8"))
+            if v:
+                out.append(v)
+        return out
+
+    # ------------------------------------------------------------- edit diffs
+    def save_edit_diff(self, key: str, before: str, after: str, kind: str) -> dict:
+        """AI 稿 → 终稿的修改对（手册 voice/edit_diffs/）。编辑距离比是最便宜的质量信号。"""
+        import difflib
+
+        ratio = 1 - difflib.SequenceMatcher(None, before, after).ratio()
+        diff = "".join(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
+                                            fromfile="agent", tofile="author", n=1))
+        rec = {"key": key, "kind": kind, "edit_ratio": round(ratio, 3), "at": now_iso(),
+               "before": before, "after": after, "diff": diff}
+        p = self.root / "voice/edit_diffs" / f"{key}.json"
+        p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        return rec
+
+    def edit_diffs(self) -> list[dict]:
+        d = self.root / "voice/edit_diffs"
+        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(d.glob("*.json"))]
 
     def variant(self, variant_id: str) -> dict:
         p = self.root / "variants" / f"{variant_id}.yaml"

@@ -58,14 +58,14 @@ def run_to_final(vault, llm):
 
 def test_full_pipeline(vault, llm, client):
     hub = run_to_final(vault, llm)
-    variants = stages.s6_adapt(vault, llm, hub, n_x=2, n_notes=1)
+    variants = stages.s6_adapt(vault, llm, hub, n_x=2, n_notes=1, formats=["x_post", "substack_note"])
     by_fmt = {}
     for v in variants:
         by_fmt.setdefault(v["format"], []).append(v)
     good, bad = by_fmt["x_post"]
     assert good["gate_results"]["passed"]
     assert not bad["gate_results"]["passed"]
-    assert {"no_link_in_root", "no_hashtags", "dry_at_least_2", "reply_hook"} <= set(bad["gate_results"]["failed"])
+    assert {"no_link", "no_hashtags", "dry_at_least_2", "reply_hook"} <= set(bad["gate_results"]["failed"])
     assert "utm_content=" + good["variant_id"] in good["link_policy"]["url"]
     assert good["gate_results"]["checks"]["numbers_in_final"]
 

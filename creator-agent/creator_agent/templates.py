@@ -27,7 +27,11 @@ rhythm: systems                  # systems（周母题、批量）| obsession（
 default_draft_mode: A            # A：人写核心论证 | B：Agent 按提纲起草，人重写关键段 | I：访谈
 languages:
   hub: zh                        # 母稿语言
-  medium: en_rewrite_only        # P1 不生成 Medium 变体
+  medium: en_rewrite_only        # none | en_rewrite_only：只有你本人写了 hubs/<id>/final_en.md 才生成 Medium 包装
+formats: [x_post, substack_note, x_thread, x_article, medium_story]   # S6 默认生成的变体
+x_article_mode: full             # full（全文）| condensed（精简版并链回母稿）
+accounts:
+  x_premium: false               # X Articles 需要有效的 Premium 订阅
 core:
   person: first_person_singular
   sentence_length: {median_chars: 28, p90_chars: 60}
@@ -39,6 +43,7 @@ platform_deltas:
   x:     {max_weighted_chars: 280, hashtags: none, tone: "更锋利，一帖一事"}
   notes: {max_sentences: 5, tone: "像对朋友说一句真心话"}
 disclosure_line: "研究与校对由 AI 辅助；观点、经历与文字出自我本人。"
+medium_disclosure_line: "This story was written with the assistance of an AI writing program."   # 仅在含 AI 辅助生成的文字时，放进前两段
 canonical_base_url: "https://TODO.substack.com/p/"
 """
 
@@ -110,6 +115,28 @@ api:
   like_follow_quote_write: removed
 monetization_excluded_topics: ["如何在 X 上赚钱", "创作者分成", "creator revenue", "monetize on x"]
 min_gap_hours_same_account: 3
+"""
+
+PLATFORM_MEDIUM = """\
+# platforms/medium.yaml —— 平台规则（按 2026-11-03 核实结果；超过 90 天请重新核对）
+platform: medium
+policy_version: "2026-11"
+verified_at: "2026-11-03"
+rules:
+  non_english_general_distribution: false
+  non_english_boost: false
+  ai_generated_paywall_allowed: false
+  ai_generated_distribution: network
+  ai_assisted_text_requires_disclosure: true      # 前两段内一句
+  boost_nomination_program: closed_2026-05-31
+  friend_link_member_reads_count: true
+mpp_eligibility:
+  mainland_china_eligible: false                  # 港澳台在列
+api:
+  supported: false
+  new_tokens: false
+publish_default: human_import
+canonical_setting_path: "More settings > Advanced Settings > This story was originally published elsewhere"
 """
 
 IDEAS_JSONL = ""

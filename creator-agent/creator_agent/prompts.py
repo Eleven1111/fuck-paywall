@@ -225,6 +225,79 @@ ADAPT_USER = """母稿：
 2. notes：{n_notes} 条 Substack Notes。不点开原文也能拿到一个完整想法；类型是 金句/图表说明/反直觉断言/提问 之一。
 3. substack：2–3 个标题候选（用于原生 A/B 测试）、一个副标题、一句文末 CTA。"""
 
+THREAD_USER = """母稿：
+{final}
+
+写 1 条 X Thread（{min_parts}–{max_parts} 帖）：
+- 首帖只看它也有价值，并能引发回复（同一会话会合并显示，首帖承载分发）；
+- 中间每帖一个要点，能单独截图转发；
+- 末帖回扣首帖的钩子，加一句 CTA（链接由程序追加，你不要写链接）；
+- 每帖不超过 {x_limit} 个加权字符（汉字算 2，约 {x_cjk} 个汉字）。"""
+
+THREAD_SCHEMA = obj({
+    "parts": arr(STR), "first_post_standalone": BOOL, "hook": STR, "cta": STR,
+})
+
+ARTICLE_USER = """母稿：
+{final}
+
+把母稿改成一篇 X Article（{mode}）：
+- 开头按 Proof → Promise → Plan 重写：先给证据，再给承诺，再说路线；不假设读者认识作者；
+- 正文用 markdown，保留母稿的事实和来源标记，不新增任何事实；
+- 另写一条能独立成立的推广单帖（不带链接，不超过 {x_limit} 个加权字符）。"""
+
+ARTICLE_SCHEMA = obj({
+    "title": STR, "body_markdown": STR,
+    "opening": obj({"proof": STR, "promise": STR, "plan": STR}),
+    "promo_post": STR,
+})
+
+MEDIUM_USER = """前提：下面是作者本人写的英文版，人写为主。不改正文，只做 Medium 包装：
+- title：五年级学生能懂；说清写什么、给谁、承诺什么；不神秘、不套路、不煽情
+- subtitle：补足语境
+- cover_note：建议用真实图片；没有合适图片宁可不用封面
+- cta：一句指向 newsletter 的话（链接由程序追加），不得成为全文主要目的
+- target_publications：2–3 个开放投稿、与主题相关的高质量 Medium 出版物名（不确定是否开放投稿就写明“需确认”）
+- first_hand_experience_present：正文里是否有基于作者亲身经验的部分
+- derivative_risk：正文是否只是转述、重组网上容易找到的信息
+
+英文版正文：
+{final_en}"""
+
+MEDIUM_SCHEMA = obj({
+    "title": STR, "subtitle": STR, "cover_note": STR, "cta": STR,
+    "target_publications": arr(STR), "first_hand_experience_present": BOOL,
+    "derivative_risk": BOOL,
+})
+
+RETRO_SYSTEM = """你在为一位写作者做月度复盘。你只提建议，所有修改都由作者本人决定（H7）。
+数据少时直接说样本不足，不要硬找规律；不要把相关说成因果。
+警惕古德哈特定律：不要建议为了指标牺牲作者的视角和声音。"""
+
+RETRO_USER = """表现前 20% 的变体（按平台分组）：
+{top}
+
+表现后 20% 的变体：
+{bottom}
+
+本月 AI 稿 → 作者终稿的修改对（edit_ratio 越大改得越多）：
+{diffs}
+
+请输出：
+- top_patterns：前 20% 的共同特征（每条注明平台和支撑它的 variant_id）
+- bottom_patterns：后 20% 的共同特征
+- recurring_edits：作者反复做的修改（每条给 1 个前后对照例子）
+- proposals：对 voice/profile.yaml、never.md、选题排序权重或变体模板的具体修改提议，每条写清依据
+- sample_size_warning：样本是否不足以下结论"""
+
+RETRO_SCHEMA = obj({
+    "top_patterns": arr(obj({"platform": STR, "pattern": STR, "evidence": arr(STR)})),
+    "bottom_patterns": arr(obj({"platform": STR, "pattern": STR, "evidence": arr(STR)})),
+    "recurring_edits": arr(obj({"pattern": STR, "before": STR, "after": STR})),
+    "proposals": arr(obj({"target": STR, "change": STR, "rationale": STR})),
+    "sample_size_warning": STR,
+})
+
 ADAPT_SCHEMA = obj({
     "x_posts": arr(obj({"text": STR, "idea": STR, "reply_hook": STR,
                         "visualize": BOOL, "falsify": BOOL, "only_you": BOOL})),

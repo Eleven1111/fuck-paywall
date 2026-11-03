@@ -79,6 +79,25 @@ ADAPT = {
 }
 
 
+THREAD = {"parts": ["按项目做访谈的团队，三个月后几乎都停了。为什么？", "因为项目会结束，节奏不会。",
+                   "我的做法：每周二下午三个电话。", "你可以从下周二开始。"],
+          "first_post_standalone": True, "hook": "为什么会停", "cta": "全文在这里"}
+
+ARTICLE = {"title": "每周一次访谈", "body_markdown": "我访谈过的 40 个小团队里，按项目做的几乎都停了 [f01]。\n\n## 做法\n每周二下午。",
+           "opening": {"proof": "40 个团队", "promise": "一个能坚持的节奏", "plan": "三步"},
+           "promo_post": "按项目做访谈的团队，三个月后几乎都停了。我写了一篇长文讲怎么改。"}
+
+MEDIUM = {"title": "Run Customer Interviews Every Week, Not Per Project",
+          "subtitle": "A cadence small teams can keep", "cover_note": "no cover",
+          "cta": "Get the template in my newsletter", "target_publications": ["The Startup（需确认）"],
+          "first_hand_experience_present": True, "derivative_risk": False}
+
+RETRO = {"top_patterns": [{"platform": "x", "pattern": "以反问结尾", "evidence": ["v1"]}],
+         "bottom_patterns": [], "recurring_edits": [], "proposals": [
+             {"target": "voice/profile.yaml", "change": "x tone 更口语", "rationale": "前 20% 都口语"}],
+         "sample_size_warning": "样本很少"}
+
+
 class FakeStream:
     def __init__(self, msg):
         self.msg = msg
@@ -118,7 +137,17 @@ class FakeMessages:
         elif "过度夸奖" in system:
             out = dict(JUDGE, score=self.owner.judge_score(params))
         elif "平台原生变体" in system:
-            out = ADAPT
+            user = params["messages"][0]["content"]
+            if "X Thread" in user:
+                out = THREAD
+            elif "X Article" in user:
+                out = ARTICLE
+            elif "Medium 包装" in user:
+                out = MEDIUM
+            else:
+                out = ADAPT
+        elif "月度复盘" in system:
+            out = RETRO
         elif "替他发表" in system:
             return FakeStream(_msg("# 草稿\n\n按周固定访谈 [f01]。\n\n[TK: 作者定结尾]"))
         else:
