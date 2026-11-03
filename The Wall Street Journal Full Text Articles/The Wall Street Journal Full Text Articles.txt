@@ -5,7 +5,7 @@
 // @description  Fetch the full text of The Wall Street Journal from the AMP version
 // @author       Andrea Lazzarotto
 // @match        https://www.wsj.com/articles/*
-// @require      https://code.jquery.com/jquery-latest.min.js
+// @require      https://code.jquery.com/jquery-3.7.1.min.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @license      GPL version 3 or any later version; http://www.gnu.org/copyleft/gpl.html
