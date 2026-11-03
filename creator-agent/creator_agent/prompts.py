@@ -72,7 +72,9 @@ RESEARCH_USER = """论点：「{thesis}」
 最后单列“反方证据”和“需要作者去补的采访或数据”。"""
 
 BIND_SYSTEM = """你是引用绑定员。把研究笔记整理成结构化的发现列表，只保留笔记里确实有 URL 支撑的内容。
-不得新增笔记里没有的结论、引语或链接。引语保持逐字。"""
+不得新增笔记里没有的结论、引语或链接。引语保持逐字。
+access_path 写明这条是怎么读到的：用 web_fetch 读了整页、只看到搜索结果摘要、官方 API/RSS、PDF 文档，或不清楚。
+只看到搜索摘要的，read_level 必须是 snippet。"""
 
 FINDING = obj({
     "id": STR, "claim": STR, "quote_verbatim": STR, "url": STR, "date": STR,
@@ -80,6 +82,8 @@ FINDING = obj({
     "read_level": {"type": "string", "enum": ["full_text", "transcript", "snippet"]},
     "speaker": STR,
     "attribution": {"type": "string", "enum": ["own_words", "relayed", "host_paraphrase", "n/a"]},
+    "access_path": {"type": "string", "enum": ["web_fetch_full_page", "search_result_snippet",
+                                               "official_api_or_rss", "pdf_or_document", "unknown"]},
     "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
 })
 RESEARCH_SCHEMA = obj({
@@ -304,3 +308,70 @@ ADAPT_SCHEMA = obj({
     "notes": arr(obj({"text": STR, "type": STR})),
     "substack": obj({"title_variants": arr(STR), "subtitle": STR, "cta": STR}),
 })
+
+
+# ----------------------------------------------------------------- P3：编排者-工作者研究
+WORKER_USER = """[子Agent任务书]
+目标：回答「{sub_question}」，服务于论点「{thesis}」。
+输出：最多 8 条发现，每条写明结论、原文逐字引语、URL、日期、信源类型（primary/secondary/aggregator/ai_distilled）、
+阅读程度（full_text/transcript/snippet）、访问方式（web_fetch 读整页 / 搜索摘要 / 官方 API 或 RSS / PDF），
+外加反方证据。
+先用 web_search 找候选，再对最关键的 2–3 个一手来源用 web_fetch 读全文，引语从全文里逐字摘。
+信源优先级：作者原文/官方数据/同行评审 > 权威媒体 > 聚合站 > AI 蒸馏；聚合站、AI 蒸馏或 snippet 不得单独支撑数字或引语。
+找不到就写“未找到证据”。边界：不写文章，最多 {k} 次工具调用。"""
+
+# ----------------------------------------------------------------- P3：SAFE 式逐条核查
+ATOMIZE_SYSTEM = """把文章拆成可单独核查的原子事实（SAFE 的第一步）。只拆事实性陈述，不拆观点和作者经历。
+每条原子事实保留原句，标出它引用的来源标记（如 [f03]），没有就留空字符串。"""
+ATOMIZE_SCHEMA = obj({"facts": arr(obj({
+    "fact": STR, "sentence": STR, "source_id": STR,
+    "kind": {"type": "string", "enum": ["quote", "number", "fact"]},
+    "speaker": STR,
+}))})
+
+ENTAIL_SYSTEM = """你是事实核查员。只根据给定的来源摘录判断原子事实是否被支撑，不用你自己的知识。
+supported：摘录直接支撑；partial：方向一致但数字、范围或语气更强；unsupported：摘录不支撑或无关。
+attribution_ok：文章把话归给的人，是否就是摘录里说这句话的人（转述、主持人复述都算归属不同）。"""
+ENTAIL_SCHEMA = obj({"verdicts": arr(obj({
+    "index": INT, "verdict": {"type": "string", "enum": ["supported", "partial", "unsupported"]},
+    "attribution_ok": BOOL, "reason": STR,
+}))})
+
+# ----------------------------------------------------------------- P3：拔刺采样
+BRIARS_SYSTEM = """慢读全文。只标出让你“卡一下”的句子：别扭、含糊、可能不真、读来乏味。
+每条给出原句（逐字）和卡住的原因（≤15字）。不要改写，不要评价整体。"""
+BRIARS_SCHEMA = obj({"briars": arr(obj({"sentence": STR, "reason": STR}))})
+
+# ----------------------------------------------------------------- P3：访谈模式
+INTERVIEW_SYSTEM = """你是访谈整理员。下面是作者口述的转写稿。你做两件事：
+1. 像一位听众那样，按段标注你的反应：Confusing / Repeated / Interesting / Boring / Surprising（Perell 的 CRIBS 原始用法）。
+2. 把口述整理成文章：只调整顺序、删冗余、补必要的过渡词，不得添加任何口述里没有的事实、数字、例子或观点。
+   口述里没讲清楚、需要补的地方写 [TK: 需作者补充]。保留作者的口头语气。"""
+INTERVIEW_USER = """提纲（按这个顺序组织）：
+{outline}
+
+口述转写稿：
+{transcript}"""
+INTERVIEW_SCHEMA = obj({
+    "reactions": arr(obj({"passage": STR, "label": {"type": "string", "enum": [
+        "Confusing", "Repeated", "Interesting", "Boring", "Surprising"]}, "note": STR})),
+    "follow_up_questions": arr(STR),
+    "draft_markdown": STR,
+})
+
+# ----------------------------------------------------------------- P3：R2 常青回收
+RECYCLE_SYSTEM = """你在帮作者回收一条 90 天前表现很好的旧帖。必须用新角度重写，不是轻改或换词：
+X 的 Original Content Rewards 排除“轻改、重复”的内容。保留核心事实，不新增事实。"""
+RECYCLE_USER = """旧帖（{fmt}）：
+{text}
+
+它当时的表现：{metrics}
+母稿全文（事实只能来自这里）：
+{final}
+
+给出 {n} 个新角度的重写。每条说明换了什么角度（例如：从结论改为讲一次失败、从方法改为反问读者、从数据改为画面）。
+X 单帖不超过 {x_limit} 个加权字符，结尾留一个读者能回答的问题；给每条打 Harry Dry 三问。"""
+RECYCLE_SCHEMA = obj({"rewrites": arr(obj({
+    "text": STR, "new_angle": STR, "reply_hook": STR,
+    "visualize": BOOL, "falsify": BOOL, "only_you": BOOL,
+}))})

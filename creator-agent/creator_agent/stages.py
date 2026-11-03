@@ -29,13 +29,15 @@ def _profile_bits(vault: Vault) -> dict:
 def s1_angles(vault: Vault, llm: LLM, hub_id: str, n: int = 4) -> dict:
     meta = vault.meta(hub_id)
     hits = vault.archive_hits(meta["idea"])
-    out = llm.json(
-        stage="angles",
-        system=P.ANGLES_SYSTEM.format(**_profile_bits(vault)),
-        user=P.ANGLES_USER.format(idea=meta["idea"], n=n,
-                                  archive_hits=json.dumps(hits, ensure_ascii=False) or "无"),
-        schema=P.ANGLES_SCHEMA,
-    )
+    user = P.ANGLES_USER.format(idea=meta["idea"], n=n,
+                                archive_hits=json.dumps(hits, ensure_ascii=False) or "无")
+    if meta.get("promoted_from"):  # R1：短帖晋升，把它的表现当作市场信号
+        pf = meta["promoted_from"]
+        user += (f"\n\n这个选题来自作者自己一条表现很好的短帖（R1 短养长）：\n“{pf['text']}”\n"
+                 f"表现：{json.dumps(pf['metrics'], ensure_ascii=False)}\n"
+                 "长文要回答这条短帖引出的追问，而不是把它拉长。")
+    out = llm.json(stage="angles", system=P.ANGLES_SYSTEM.format(**_profile_bits(vault)),
+                   user=user, schema=P.ANGLES_SCHEMA)
     for a in out["angles"]:
         a["prelim_score"] = score_angle(a, excitement=None)  # 兴奋度待作者在 H1 填写
     out["archive_hits"] = hits
@@ -72,14 +74,21 @@ def s2_research(vault: Vault, llm: LLM, hub_id: str) -> dict:
     subq = llm.json(stage="research", system=P.SUBQ_SYSTEM,
                     user=f"论点：{angle['thesis']}\n大想法：{angle['one_big_idea']}",
                     schema=P.SUBQ_SCHEMA)["questions"]
-    notes = llm.text(
-        stage="research", system=P.RESEARCH_SYSTEM, web_search=True,
-        user=P.RESEARCH_USER.format(thesis=angle["thesis"], one_big_idea=angle["one_big_idea"],
-                                    edge=meta.get("edge", ""),
-                                    questions="\n".join(f"- {q}" for q in subq)),
-    )
+    mode = vault.research_mode()
+    if mode == "multi":
+        from .research import run_workers
+
+        bound, notes = run_workers(vault, llm, hub_id, angle, subq)
+    else:
+        notes = llm.text(
+            stage="research", system=P.RESEARCH_SYSTEM, web_search=True, web_fetch=True,
+            user=P.RESEARCH_USER.format(thesis=angle["thesis"], one_big_idea=angle["one_big_idea"],
+                                        edge=meta.get("edge", ""),
+                                        questions="\n".join(f"- {q}" for q in subq)),
+        )
+        bound = llm.json(stage="research", system=P.BIND_SYSTEM, user=notes, schema=P.RESEARCH_SCHEMA)
     vault.write_hub_file(hub_id, "research_notes.md", notes)
-    bound = llm.json(stage="research", system=P.BIND_SYSTEM, user=notes, schema=P.RESEARCH_SCHEMA)
+    bound["mode"] = mode
     for i, f in enumerate(bound["findings"], 1):
         f["id"] = f"f{i:02d}"
         f["weak"] = f["read_level"] == "snippet" or f["source_type"] in ("aggregator", "ai_distilled")
@@ -295,11 +304,63 @@ def s5_review(vault: Vault, llm: LLM, hub_id: str) -> dict:
         "blocking": blocking,
     })
     report["lint"]["ok"] = report["lint"]["ok"] and not blocking
-    report["pass"] = not blocking and score >= vault.review_threshold()
+
+    # ---- P3：拔刺采样、SAFE 式核查、风格漂移。不通过时 pass=False，H4 需写 --override-reason
+    p3 = vault.p3_settings()
+    soft = []
+    if p3["briars_samples"] > 1:
+        report["briars"] = sample_briars(llm, draft, p3["briars_samples"])
+    if p3["factcheck"]:
+        from .factcheck import factcheck
+
+        fc = factcheck(llm, draft, research["findings"], refetch=p3["refetch_quotes"])
+        report["factcheck"] = fc
+        report["scores"]["support_rate"] = fc["support_rate"]
+        report["scores"]["hard_support_rate"] = fc["hard_support_rate"]
+        if fc["blocking"]:
+            soft.append({"check": "factcheck", "note": "引语或数字的支撑率低于 100%",
+                         "items": [f"{r['sentence']}（{r['verdict']}"
+                                   f"{'，归属不对' if r['attribution_ok'] is False else ''}"
+                                   f"{'，原网页找不到引语' if r.get('quote_on_page') is False else ''}"
+                                   f"{'，只有弱来源' if r.get('weak_source') else ''}）" for r in fc["blocking"]]})
+    from .style import baseline, drift
+
+    docs = vault.style_corpus()
+    if len(docs) >= p3["style_min_docs"]:
+        d = drift(draft, baseline(docs), p3["style_drift_sigma"])
+    else:
+        d = {"checked": False, "reason": f"往期文章不足 {p3['style_min_docs']} 篇（现有 {len(docs)}）"}
+    report["style"] = d
+    if d.get("drifted"):
+        soft.append({"check": "style_drift", "note": f"风格偏离往期均值（平均 |z|={d['mean_abs_z']}）",
+                     "items": [f"{k}: z={v}" for k, v in d["outliers"].items()]})
+    report["soft_fails"] = soft
+    report["pass"] = not blocking and not soft and score >= vault.review_threshold()
     _write_review(vault, hub_id, report)
     meta["status"] = "reviewed"
     vault.save_meta(hub_id, meta)
     return report
+
+
+def sample_briars(llm: LLM, draft: str, samples: int) -> dict:
+    """独立采样 N 次拔刺，至少 2 次命中的句子才进报告（手册：3 次独立采样，交叉出现的摩擦点）。"""
+    def key(s: str) -> str:
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", s.lower())[:60]
+
+    hits: dict[str, dict] = {}
+    for _ in range(samples):
+        out = llm.json(stage="review", system=P.BRIARS_SYSTEM, user=draft, schema=P.BRIARS_SCHEMA)
+        seen = set()
+        for b in out["briars"]:
+            k = key(b["sentence"])
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            h = hits.setdefault(k, {"sentence": b["sentence"], "reasons": [], "hits": 0})
+            h["hits"] += 1
+            h["reasons"].append(b["reason"])
+    items = sorted([h for h in hits.values() if h["hits"] >= 2], key=lambda h: -h["hits"])
+    return {"samples": samples, "items": items, "single_hits": sum(1 for h in hits.values() if h["hits"] == 1)}
 
 
 def _write_review(vault: Vault, hub_id: str, r: dict) -> None:
@@ -322,7 +383,13 @@ def _write_review(vault: Vault, hub_id: str, r: dict) -> None:
                   for m in s["misreadings"]] + [""]
     if r.get("critique"):
         c = r["critique"]
-        lines += ["## 拔刺（PG）"] + [f"- “{b['sentence']}” —— {b['reason']}" for b in c["briars"]] + [""]
+        if r.get("briars") is not None:
+            lines += [f"## 拔刺（PG，{r['briars']['samples']} 次独立采样，≥2 次命中）"]
+            lines += [f"- “{b['sentence']}” —— {'；'.join(dict.fromkeys(b['reasons']))}（{b['hits']} 次）"
+                      for b in r["briars"]["items"]] or ["- 无"]
+            lines += [""]
+        else:
+            lines += ["## 拔刺（PG）"] + [f"- “{b['sentence']}” —— {b['reason']}" for b in c["briars"]] + [""]
         lines += ["## Dry 三问（能想象 / 能证伪 / 只有你能说）"]
         lines += [f"- {'✓' if d['visualize'] else '✗'}{'✓' if d['falsify'] else '✗'}"
                   f"{'✓' if d['only_you'] else '✗'} {d['sentence']}" for d in c["dry_tests"]] + [""]
@@ -335,6 +402,25 @@ def _write_review(vault: Vault, hub_id: str, r: dict) -> None:
         lines += ["## 诚实三问", f"- 公平：{c['honesty']['fair']}｜准确：{c['honesty']['accurate']}｜"
                   f"能说服公正观察者：{c['honesty']['persuasive_to_fair_observers']}",
                   f"- {c['honesty']['notes']}", ""]
+    if r.get("soft_fails"):
+        lines += ["## 未通过（可修改后重评，或在 H4 用 --override-reason 写明理由）"]
+        for f in r["soft_fails"]:
+            lines += [f"- **{f['check']}**：{f['note']}"] + [f"  - {x}" for x in f["items"]]
+        lines += [""]
+    if r.get("factcheck"):
+        fc = r["factcheck"]
+        lines += [f"## 逐条核查（SAFE 式）：支撑率 {fc['support_rate']:.0%}，引语与数字 {fc['hard_support_rate']:.0%}"]
+        for x in fc["facts"]:
+            page = {True: "，原网页已找到", False: "，原网页找不到", None: ""}[x.get("quote_on_page")]
+            lines.append(f"- [{x['kind']}/{x['verdict']}{page}] {x['fact']}（{x['source_id'] or '无来源'}）")
+        if fc["unreachable_pages"]:
+            lines.append(f"- 打不开、需人工核对的页面：{', '.join(fc['unreachable_pages'])}")
+        lines += [""]
+    if r.get("style"):
+        st = r["style"]
+        lines += ["## 风格漂移", f"- {'已检测' if st.get('checked') else '未检测'}："
+                  + (f"平均 |z|={st['mean_abs_z']}，{'漂移' if st['drifted'] else '正常'}（基线 {st['baseline_docs']} 篇）"
+                     if st.get("checked") else st.get("reason", "")), ""]
     if r.get("flags"):
         lines += ["## 标记（只提示，不强制）"] + [f"- {json.dumps(f, ensure_ascii=False)}" for f in r["flags"]] + [""]
     lines += ["## H4 人工核对清单",

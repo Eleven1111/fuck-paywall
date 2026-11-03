@@ -10,12 +10,13 @@ from creator_agent.llm import LLM, LLMConfig
 from creator_agent.utm import with_utm
 from creator_agent.vault import Vault
 
-from fakes import FakeClient
+from fakes import FakeClient, _no_network
 
 
 @pytest.fixture
 def vault(tmp_path):
     v = Vault.init(tmp_path / "vault")
+    _no_network(v)
     (v.root / "archive/old.md").write_text("# 用户访谈怎么做\n\n小团队访谈经验", encoding="utf-8")
     return v
 

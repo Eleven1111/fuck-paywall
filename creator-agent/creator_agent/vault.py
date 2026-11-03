@@ -83,6 +83,20 @@ class Vault:
         cfg.effort.update(raw.get("effort") or {})
         return cfg
 
+    def research_mode(self) -> str:
+        return str((self._yaml("agent.yaml").get("research") or {}).get("mode", "single"))
+
+    def p3_settings(self) -> dict:
+        raw = self._yaml("agent.yaml")
+        review = raw.get("review") or {}
+        return {
+            "factcheck": bool(review.get("factcheck", True)),
+            "refetch_quotes": bool(review.get("refetch_quotes", True)),
+            "briars_samples": int(review.get("briars_samples", 3)),
+            "style_drift_sigma": float(review.get("style_drift_sigma", 2.0)),
+            "style_min_docs": int(review.get("style_min_docs", 5)),
+        }
+
     def review_threshold(self) -> float:
         return float((self._yaml("agent.yaml").get("review") or {}).get("pass_threshold", 0.6))
 
@@ -104,6 +118,10 @@ class Vault:
     def exemplars(self, limit: int = 8) -> str:
         files = sorted((self.root / "voice/exemplars").glob("*.md"))[:limit]
         return "\n\n---\n\n".join(f.read_text(encoding="utf-8") for f in files)
+
+    def style_corpus(self) -> list[str]:
+        files = sorted((self.root / "archive").glob("*.md")) + sorted((self.root / "voice/exemplars").glob("*.md"))
+        return [f.read_text(encoding="utf-8") for f in files]
 
     def anchors(self) -> dict[str, list[str]]:
         d = self.root / "evals/anchors"

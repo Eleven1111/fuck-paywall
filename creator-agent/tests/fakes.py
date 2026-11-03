@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 
@@ -26,11 +27,11 @@ RESEARCH = {
     "findings": [{
         "id": "x", "claim": "持续访谈提高产品决策质量", "quote_verbatim": "Talk to customers weekly",
         "url": "https://example.com/a", "date": "2024-01-01", "source_type": "primary",
-        "read_level": "full_text", "speaker": "Teresa Torres", "attribution": "own_words",
+        "read_level": "full_text", "speaker": "Teresa Torres", "attribution": "own_words", "access_path": "web_fetch_full_page",
         "confidence": "high"}, {
         "id": "y", "claim": "某聚合站说 80% 团队不做访谈", "quote_verbatim": "80% never",
         "url": "https://agg.example.com", "date": "2023", "source_type": "aggregator",
-        "read_level": "snippet", "speaker": "n/a", "attribution": "n/a", "confidence": "low"}],
+        "read_level": "snippet", "speaker": "n/a", "attribution": "n/a", "confidence": "low", "access_path": "search_result_snippet"}],
     "counter_evidence": [{"claim": "早期团队更该看数据", "url": "https://example.com/c"}],
     "human_todo": ["约 2 位创始人访谈"], "not_found": [],
 }
@@ -134,6 +135,27 @@ class FakeMessages:
             out = STRANGER
         elif "严格的编辑" in system:
             out = CRITIQUE
+        elif "事实核查员" in system:
+            items = json.loads(params["messages"][0]["content"])
+            out = {"verdicts": [{"index": it["index"], "verdict": self.owner.entail_verdict,
+                                 "attribution_ok": True, "reason": ""} for it in items]}
+        elif "原子事实" in system:
+            draft = params["messages"][0]["content"]
+            sid = (re.findall(r"\[(f\d{2})\]", draft) or [""])[0]
+            out = {"facts": [{"fact": "按周固定访谈比按项目访谈更能坚持", "sentence": "按周固定访谈比按项目访谈更能坚持",
+                              "source_id": sid, "kind": self.owner.fact_kind, "speaker": "Teresa Torres"}]}
+        elif "卡一下" in system:
+            self.owner.briars_calls += 1
+            out = {"briars": [{"sentence": "这很重要。", "reason": "含糊"}]
+                   + ([{"sentence": f"偶发{self.owner.briars_calls}", "reason": "x"}])}
+        elif "访谈整理员" in system:
+            out = {"reactions": [{"passage": "我每周二", "label": "Interesting", "note": ""},
+                                 {"passage": "然后然后", "label": "Repeated", "note": "重复"}],
+                   "follow_up_questions": ["坚持了多久？"],
+                   "draft_markdown": self.owner.interview_draft}
+        elif "回收一条" in system:
+            out = {"rewrites": [{"text": self.owner.recycle_text, "new_angle": "讲一次失败",
+                                 "reply_hook": "你停过吗？", "visualize": True, "falsify": True, "only_you": True}]}
         elif "过度夸奖" in system:
             out = dict(JUDGE, score=self.owner.judge_score(params))
         elif "平台原生变体" in system:
@@ -159,8 +181,20 @@ class FakeMessages:
 class FakeClient:
     def __init__(self, judge_score=None):
         self.calls: list[dict] = []
+        self.fact_kind = "fact"
+        self.entail_verdict = "supported"
+        self.briars_calls = 0
+        self.interview_draft = "# 访谈稿\n\n我每周二下午打三个电话。"
+        self.recycle_text = "我也停过一次访谈。那次是因为项目结束了，节奏就断了。你停过吗？"
         self._judge = judge_score or (lambda params: 0.72)
         self.beta = SimpleNamespace(messages=FakeMessages(self))
 
     def judge_score(self, params):
         return self._judge(params)
+
+
+def _no_network(vault):
+    """测试里不回原网页抓取引语。"""
+    p = vault.root / "agent.yaml"
+    p.write_text(p.read_text(encoding="utf-8").replace("refetch_quotes: true", "refetch_quotes: false"),
+                 encoding="utf-8")

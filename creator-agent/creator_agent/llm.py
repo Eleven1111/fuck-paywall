@@ -18,6 +18,7 @@ from typing import Any
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search"}
+WEB_FETCH_TOOL = {"type": "web_fetch_20260209", "name": "web_fetch"}
 MAX_CONTINUATIONS = 5
 
 
@@ -137,10 +138,15 @@ class LLM:
         except json.JSONDecodeError as e:
             raise LLMError(f"[{stage}] 结构化输出无法解析：{e}；原文前 200 字：{text[:200]}") from e
 
-    def text(self, *, stage: str, system: str, user: str, web_search: bool = False) -> str:
-        tools = None
+    def text(self, *, stage: str, system: str, user: str, web_search: bool = False,
+             web_fetch: bool = False, max_uses: int | None = None) -> str:
+        tools = []
         if web_search:
-            tools = [dict(WEB_SEARCH_TOOL, max_uses=self.config.web_search_max_uses)]
+            tools.append(dict(WEB_SEARCH_TOOL, max_uses=max_uses or self.config.web_search_max_uses))
+        if web_fetch:
+            # web_fetch 只能抓对话里已出现的 URL（搜索结果或提示词里给的链接），用来读全文而非摘要
+            tools.append(dict(WEB_FETCH_TOOL, max_uses=max_uses or self.config.web_search_max_uses))
+        tools = tools or None
         message = self._request(stage=stage, system=system,
                                 messages=[{"role": "user", "content": user}], tools=tools)
         return self._text_of(message)

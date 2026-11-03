@@ -15,6 +15,13 @@ effort:                          # low | medium | high | xhigh | max
   eval: medium
 review:
   pass_threshold: 0.6            # 反恭维评审分 >= 阈值 且 无硬拦截 才算通过
+  factcheck: true                # P3：SAFE 式逐条核查（拆原子事实 → 对照来源摘录判断是否支撑）
+  refetch_quotes: true           # P3：引语回原网页逐字核对（只读 GET）
+  briars_samples: 3              # P3：拔刺独立采样次数，至少 2 次命中才进报告
+  style_drift_sigma: 2.0         # P3：风格特征偏离往期均值超过 2σ 视为漂移
+  style_min_docs: 5              # 往期文章（archive/ + voice/exemplars/）少于 5 篇时不做漂移检测
+research:
+  mode: single                   # single | multi（编排者-工作者，约 15 倍 token；离线测试证明有提升再开）
 """
 
 PROFILE_YAML = """\

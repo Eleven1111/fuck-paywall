@@ -328,6 +328,14 @@ def revalidate(vault: Vault, v: dict) -> dict:
         checks, gate = check_medium(pkg, text, meta, v["canonical"]["url"]), "G-MD"
     else:
         raise VaultError(f"未知格式 {fmt}")
+    if v.get("derivation") == "recycle":
+        from .loops import jaccard
+
+        others = [x["body"].get("text", "") for x in vault.variants_of(hub_id)
+                  if x["status"] == "published" and x["format"] == fmt]
+        sim = max((jaccard(text, t) for t in others), default=0.0)
+        checks["similarity_to_published"] = round(sim, 2)
+        checks["not_light_edit"] = sim < 0.5
     if edited:
         checks["edited_by_author"] = "yes（LLM 打的三问/首帖分基于原稿，供参考）"
     prev = v.get("gate_results", {})

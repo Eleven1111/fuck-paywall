@@ -11,13 +11,15 @@ from creator_agent.llm import LLM
 from creator_agent.retro import approve_retro, build_retro
 from creator_agent.vault import Vault, VaultError
 
-from fakes import FakeClient
+from fakes import FakeClient, _no_network
 from test_pipeline import run_to_final
 
 
 @pytest.fixture
 def vault(tmp_path):
-    return Vault.init(tmp_path / "vault")
+    v = Vault.init(tmp_path / "vault")
+    _no_network(v)
+    return v
 
 
 @pytest.fixture

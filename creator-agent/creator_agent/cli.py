@@ -217,6 +217,40 @@ def cmd_retro_approve(args):
     print(f"H7 已记录：{json.dumps(rec, ensure_ascii=False)}")
 
 
+def cmd_interview(args):
+    v = _vault(args)
+    from .loops import interview
+
+    r = interview(v, _llm(v), args.hub, Path(args.transcript).read_text(encoding="utf-8"))
+    warn = len(r["suspicious"]) + (1 if r["added_numbers"] else 0)
+    print(f"整理稿 → hubs/{args.hub}/draft.md；CRIBS 与检查 → cribs.md（{warn} 处需要你确认）")
+
+
+def cmd_promote(args):
+    v = _vault(args)
+    from .loops import promote
+
+    hub = promote(v, args.variant)
+    print(f"已晋升为长文母稿 {hub}；下一步 `ca angles {hub}`")
+
+
+def cmd_recycle(args):
+    v = _vault(args)
+    from .loops import recycle
+
+    for x in recycle(v, _llm(v), args.variant, n=args.n, force=args.force):
+        mark = "✓" if x["gate_results"]["passed"] else f"✗ {x['gate_results']['failed']}"
+        print(f"{x['variant_id']}  {mark}  相似度 {x['gate_results']['checks']['similarity_to_published']}")
+    print("改稿在 variants/<id>.md；审批：`ca approve <hub> H5 --variants <id>`")
+
+
+def cmd_progress(args):
+    v = _vault(args)
+    from .loops import progress
+
+    print(json.dumps(progress(v), ensure_ascii=False, indent=2))
+
+
 def cmd_eval(args):
     v = _vault(args)
     from .evalset import run_eval
@@ -338,6 +372,24 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--r1", help="all 或逗号分隔的 variant_id")
     s.add_argument("--note")
     s.set_defaults(func=cmd_retro_approve)
+
+    s = sub.add_parser("interview", help="P3 模式 I：把你的口述转写稿按提纲整理，并做 CRIBS 标注（需 H3）")
+    s.add_argument("hub")
+    s.add_argument("--transcript", required=True, help="口述转写稿（markdown / txt）")
+    s.set_defaults(func=cmd_interview)
+
+    s = sub.add_parser("promote", help="P3 R1：把一条表现好的短帖晋升为长文母稿")
+    s.add_argument("variant")
+    s.set_defaults(func=cmd_promote)
+
+    s = sub.add_parser("recycle", help="P3 R2：用新角度重写一条 ≥90 天的高表现短帖")
+    s.add_argument("variant")
+    s.add_argument("-n", type=int, default=2)
+    s.add_argument("--force", action="store_true", help="跳过 90 天限制")
+    s.set_defaults(func=cmd_recycle)
+
+    s = sub.add_parser("progress", help="P3 完成度：支撑率、编辑时长趋势、R1 长文数")
+    s.set_defaults(func=cmd_progress)
 
     s = sub.add_parser("eval", help="在离线测试集上检验评审能否区分好稿和差稿")
     s.set_defaults(func=cmd_eval)
