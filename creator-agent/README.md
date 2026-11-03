@@ -1,4 +1,4 @@
-# creator-agent · 多平台创作 Agent（P1 MVP + P2 + P3）
+# creator-agent · 多平台创作 Agent（P1–P4）
 
 按《[三平台创作 Agent 手册·核实版](../reports/三平台创作Agent手册核实版.md)》第三部分的路线图，实现 **P0 建库 + P1 MVP**：
 
@@ -7,6 +7,8 @@
 **P2**（本版）在此基础上加了 X Thread、X Articles、Medium 英文版三种变体；所有变体都先进待审队列，你可以直接改稿，审批后生成发布包；另外加了只读的指标回流、`edit_diffs` 采集和月度复盘。按你的要求，**所有发布都由你本人在客户端完成**，本工具不调用任何平台的写入接口。
 
 **P3** 加强了研究和评审：研究可以切换成多个子 Agent 并行（默认关闭），每条引语回原网页逐字核对，拔刺改成 3 次独立采样，新增风格漂移检测、访谈模式整理口述稿、短帖晋升长文（R1）和老帖换角度重写（R2）。
+
+**P4** 把整条流程编成 LangGraph 图（每个闸口是 `interrupt()`，SQLite 持久化，关掉终端明天接着来），加了本地语音转写、读者调查的设计与分析、作者盲评和合规审计。
 
 它是一个**工作流**，不是自主 Agent：每个阶段一两次确定的模型调用，结果写成 markdown 交给你审，你用 `ca approve` 放行后才能进下一步。
 
@@ -130,17 +132,57 @@ ca progress                              # P3 完成度：支撑率 ≥95%、编
 
 逐条核查和风格漂移不通过时，评审结论是“未通过”，但不是硬拦截：你可以改稿重评，也可以在 H4 用 `--override-reason` 写明理由后定稿。引语或数字只有弱来源支撑、原网页找不到引语、归属不对，都算核查不通过；原网页打不开时只提示，交给你在 H4 人工核对。
 
+## P4 新增
+
+```bash
+pip install -e '.[graph]'                 # ca flow 需要
+pip install -e '.[voice]'                 # ca interview --audio 需要（本地转写，不上传音频）
+
+# 1) LangGraph 编排：一条命令走到下一个闸口，停下等你
+ca flow start "小团队要不要做用户访谈？"
+ca flow resume <id> --set angle=2 excitement=4 edge="大家默认按项目做"   # H1
+ca flow resume <id> --set confirm=true                                  # H2
+ca flow resume <id>                                                     # H3
+# 写好 hubs/<id>/draft.md 后：
+ca flow resume <id> --do done                                           # DRAFT → S5 评审
+ca flow resume <id> --set quotes_checked=3 numbers_checked=2 ending_ok=true canonical_url=https://...   # H4
+ca flow resume <id> --set variants=all                                  # H5 → publish_kit.md
+ca flow status <id>
+# 不满意可以退回：H1–H3、H5 用 --do redo 重跑上一阶段；H4 用 --do revise 回去改稿
+
+# 2) 语音访谈
+ca interview <id> --audio 口述.m4a --whisper-model small
+
+# 3) 读者调查
+ca survey design "了解读者做用户访谈的频率和障碍" --topic "每周一次访谈" -n 10
+ca survey analyze <survey_id> responses.csv
+
+# 4) P4 完成标准
+ca blind prepare --ai <hub1>,<hub2> --human 旧文1.md,旧文2.md   # 去掉来源标记后打乱，你在 ratings.csv 盲打分
+ca blind score <batch>
+ca audit                                  # 每次发布都经 H5 批准且晚于批准时间、没有自动互动、平台规则 90 天内核对过
+```
+
+| 能力 | 做法 |
+|---|---|
+| 图编排 | 节点 S1–S6 加人工节点 H1、H2、H3、DRAFT、H4、H5；状态存在 `runs/flow.sqlite`，线程 id 就是母稿 id。闸口规则与 `ca approve` 完全相同；已用 `ca approve` 批过的闸口会被跳过；输入不合法时带着错误信息回到同一闸口，不会中断流程。图在 H5 生成发布包后结束，**发布仍由你本人完成** |
+| 语音转写 | faster-whisper 在本地转写，带时间戳，交给访谈模式整理；没装就提示你用外部工具转成文字稿 |
+| 读者调查 | 问卷按“一题一事、不诱导、先行为后态度、开放题 ≤3”设计，附自选样本偏差提醒；分析时选择题和量表题用确定性统计，开放题由模型归纳主题，**每条引用都逐字核对是否真在回答里**，对不上的丢掉；样本少于 30 时提示 |
+| 盲评 | 去掉 `[fNN]`、TK 和 AI 披露行后打乱；对照表存在 `.key.json`，打分前不要打开 |
+| 审计 | 检查已发布变体：发布渠道是 manual、有 H5 批准且发布时间晚于批准时间、母稿 H1–H5 齐全、`automated_interaction` 为 none；平台规则 90 天内核对过 |
+
+**手册 P4 里刻意没做的两项：** 接排期工具 API（如 Typefully）、用 cookie 调非官方接口建 Substack 草稿。前者会替你定时发布，后者有违反服务条款的风险，而且两者都要往平台写入，与“所有发布都由你人工完成”冲突。
+
 ## 和手册 P2 的差异
 
 - **不接 X 发帖 API，也不实测"API 自回复"和 Articles 的 API 计费**：你要求所有发布都人工完成，这几项就没有必要了。Thread 和 Article 都由你在 X 客户端里粘贴发布。
 - **X 指标用 app-only Bearer Token 读公开指标**：官方价目表里读自己帖子的 Owned Reads 是 $0.001/条，但用 Bearer Token 能否按这个价计费，我没核实，所以 `--dry-run` 按 $0.005/条保守估算。
 - **Substack 导出 CSV 的列名没核实**：导入器只要求有 `variant_id` 或 `url` 列，其余数值列都当作指标。
 
-## 留给 P4
+## 之后可以做的
 
-- 闸口是文件记录，不是 LangGraph `interrupt()` + 持久化 checkpointer。
-- 访谈模式的语音 → 转写这一步不在工具里，需要你自己用转写工具生成文字稿。
-- 读者调查的设计与分析。
+- 用真实数据跑通后再调：评审阈值、风格漂移的 σ、R1 的“2 倍中位数”这些参数目前都是手册里的默认值。
+- 盲评目前是 1–5 分的均值比较，样本多了以后可以换成成对比较。
 
 ## 开发
 
@@ -148,4 +190,4 @@ ca progress                              # P3 完成度：支撑率 ≥95%、编
 pytest -q
 ```
 
-测试用假客户端覆盖了完整流水线、闸口顺序、TK 拦截、来源 id 校验、改编不得新增数字、X 加权字数、UTM、测试集打分，以及 P2 的五种变体、Medium 跳过条件、改稿后重检与修改对、推广帖跟随母体、只读 X 指标、CSV 导入、月度复盘与 R1 入池，以及 P3 的多 Agent 研究去重、逐条核查与回原网页比对、弱来源拦截、拔刺交叉采样、风格漂移、访谈整理的新增检测、R1 晋升、R2 相似度拦截和完成度统计。**这个版本还没有用真实 API 跑过**，第一次真实运行时请留意各阶段的结构化输出是否符合预期。
+测试用假客户端覆盖了完整流水线、闸口顺序、TK 拦截、来源 id 校验、改编不得新增数字、X 加权字数、UTM、测试集打分，以及 P2 的五种变体、Medium 跳过条件、改稿后重检与修改对、推广帖跟随母体、只读 X 指标、CSV 导入、月度复盘与 R1 入池，以及 P4 的图编排（跨实例持久化、非法输入回到闸口、redo / revise、跳过已批闸口、全程不发布）、本地转写、调查统计与引用核对、盲评和审计，以及 P3 的多 Agent 研究去重、逐条核查与回原网页比对、弱来源拦截、拔刺交叉采样、风格漂移、访谈整理的新增检测、R1 晋升、R2 相似度拦截和完成度统计。**这个版本还没有用真实 API 跑过**，第一次真实运行时请留意各阶段的结构化输出是否符合预期。

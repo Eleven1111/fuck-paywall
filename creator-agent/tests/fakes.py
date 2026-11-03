@@ -156,6 +156,18 @@ class FakeMessages:
         elif "回收一条" in system:
             out = {"rewrites": [{"text": self.owner.recycle_text, "new_angle": "讲一次失败",
                                  "reply_hook": "你停过吗？", "visualize": True, "falsify": True, "only_you": True}]}
+        elif "开放题回答" in system:
+            out = {"themes": [{"question_id": "q03", "theme": "时间不够", "approx_count": 2,
+                               "quotes": ["没时间约人", "这句根本不在回答里"]}]}
+        elif "读者调查" in system:
+            out = {"title": "访谈习惯调查", "intro": "5 分钟",
+                   "questions": [
+                       {"id": "x", "text": "你多久做一次用户访谈？", "type": "single",
+                        "options": ["每周", "每月", "按项目", "从不"], "why": "行为"},
+                       {"id": "x", "text": "你对现在的访谈节奏满意吗？", "type": "scale",
+                        "options": ["1", "2", "3", "4", "5"], "why": "态度"},
+                       {"id": "x", "text": "最大的障碍是什么？", "type": "open", "options": [], "why": "开放"}],
+                   "bias_notes": ["只有愿意填问卷的读者会回答"]}
         elif "过度夸奖" in system:
             out = dict(JUDGE, score=self.owner.judge_score(params))
         elif "平台原生变体" in system:

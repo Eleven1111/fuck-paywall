@@ -359,6 +359,31 @@ INTERVIEW_SCHEMA = obj({
     "draft_markdown": STR,
 })
 
+# ----------------------------------------------------------------- P4：读者调查
+SURVEY_SYSTEM = """你为一位写作者设计读者调查（参考 Lenny Rachitsky、Gergely Orosz 的做法：问卷用来拿到专有数据，
+成为文章的一手素材）。原则：每题只问一件事；不诱导；选项互斥且穷尽（必要时加“其他”）；
+先问行为和事实，再问态度；开放题不超过 3 道；全卷 5 分钟内能答完。
+必须提醒：读者自选样本不具代表性（Orosz），结论只能说“我的读者中”。"""
+SURVEY_USER = """调查目的：{goal}
+它服务的文章或选题：{topic}
+读者画像：{persona}
+题目数：{n}"""
+SURVEY_SCHEMA = obj({
+    "title": STR, "intro": STR,
+    "questions": arr(obj({
+        "id": STR, "text": STR,
+        "type": {"type": "string", "enum": ["single", "multi", "scale", "number", "open"]},
+        "options": arr(STR), "why": STR,
+    })),
+    "bias_notes": arr(STR),
+})
+
+SURVEY_ANALYZE_SYSTEM = """你在分析读者调查的开放题回答。只总结，不推断因果；每个主题必须附 1–3 条逐字引用的原回答
+（必须是给定回答里的原文片段，不得改写）。注明每个主题大约有多少条回答提到。"""
+SURVEY_ANALYZE_SCHEMA = obj({"themes": arr(obj({
+    "question_id": STR, "theme": STR, "approx_count": INT, "quotes": arr(STR),
+}))})
+
 # ----------------------------------------------------------------- P3：R2 常青回收
 RECYCLE_SYSTEM = """你在帮作者回收一条 90 天前表现很好的旧帖。必须用新角度重写，不是轻改或换词：
 X 的 Original Content Rewards 排除“轻改、重复”的内容。保留核心事实，不新增事实。"""

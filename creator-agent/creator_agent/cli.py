@@ -221,7 +221,17 @@ def cmd_interview(args):
     v = _vault(args)
     from .loops import interview
 
-    r = interview(v, _llm(v), args.hub, Path(args.transcript).read_text(encoding="utf-8"))
+    if args.audio:
+        from .transcribe import transcribe
+
+        lang = (v.profile().get("languages") or {}).get("hub", "zh")
+        text = transcribe(Path(args.audio), model_size=args.whisper_model, language=lang)
+        print(f"本地转写完成：{len(text)} 字")
+    elif args.transcript:
+        text = Path(args.transcript).read_text(encoding="utf-8")
+    else:
+        raise VaultError("需要 --transcript 文字稿 或 --audio 音频文件")
+    r = interview(v, _llm(v), args.hub, text)
     warn = len(r["suspicious"]) + (1 if r["added_numbers"] else 0)
     print(f"整理稿 → hubs/{args.hub}/draft.md；CRIBS 与检查 → cribs.md（{warn} 处需要你确认）")
 
@@ -249,6 +259,82 @@ def cmd_progress(args):
     from .loops import progress
 
     print(json.dumps(progress(v), ensure_ascii=False, indent=2))
+
+
+def cmd_flow(args):
+    v = _vault(args)
+    from . import graph
+
+    llm = _llm(v)
+    if args.action == "start":
+        hub = args.target
+        if not hub.startswith("20"):
+            idea = v.idea(hub) if hub.startswith("idea_") else v.add_idea(hub)
+            hub = v.new_hub(idea)
+        waiting = graph.start(v, llm, hub)
+    elif args.action == "resume":
+        hub = args.target
+        waiting = graph.resume(v, llm, hub, graph.parse_answer(args.set or [], args.do))
+    else:
+        hub = args.target
+        st = graph.status(v, llm, hub)
+        waiting = st["waiting"]
+        if st["done"]:
+            print(f"{hub} 的流程已走完；去 hubs/{hub}/publish_kit.md 手动发布")
+            return
+    if waiting is None:
+        print(f"{hub} 的流程已走完；去 hubs/{hub}/publish_kit.md 手动发布")
+        return
+    print(f"{hub} 停在 {waiting['gate']}：{waiting['ask']}")
+    print(f"  先看：{waiting['review']}")
+    if waiting.get("error"):
+        print(f"  上次输入被拒：{waiting['error']}")
+    ex = " ".join(f"{k}={','.join(x) if isinstance(x, list) else x}" for k, x in waiting["example_resume"].items()
+                  if k != "action")
+    cmd = f"ca flow resume {hub} --do {waiting['example_resume'].get('action', 'approve')}"
+    print(f"  继续：{cmd} --set {ex}" if ex else f"  继续：{cmd}")
+    for alt in waiting.get("other_actions", []):
+        print(f"  或者：ca flow resume {hub} --do {alt}")
+
+
+def cmd_survey(args):
+    v = _vault(args)
+    from . import survey
+
+    if args.action == "design":
+        if not args.goal_or_id:
+            raise VaultError("用法：ca survey design \"调查目的\" [--topic ...]")
+        sid = survey.design(v, _llm(v), args.goal_or_id, topic=args.topic or "", n=args.n)
+        print(f"问卷 → surveys/{sid}/survey.md；收集回答用 responses_template.csv 的表头")
+    else:
+        if not (args.goal_or_id and args.responses):
+            raise VaultError("用法：ca survey analyze <survey_id> <responses.csv>")
+        r = survey.analyze(v, _llm(v), args.goal_or_id, Path(args.responses))
+        print(f"n={r['n']}，分析 → surveys/{args.goal_or_id}/analysis.md")
+
+
+def cmd_blind(args):
+    v = _vault(args)
+    from .audit import blind_prepare, blind_score
+
+    if args.action == "prepare":
+        batch = blind_prepare(v, args.ai.split(","), [Path(p) for p in args.human.split(",")])
+        print(f"盲评包 → evals/{batch}/：读 item_*.md，在 ratings.csv 打 1–5 分（不要打开 .key.json）")
+        print(f"打完：ca blind score {batch}")
+    else:
+        r = blind_score(v, args.batch)
+        verdict = "AI 参与稿不低于纯人写稿 ✓" if r["ai_not_worse"] else "AI 参与稿低于纯人写稿 ✗"
+        print(f"AI 组 {r['ai_mean']}（{r['n_ai']} 篇）vs 人写组 {r['human_mean']}（{r['n_human']} 篇）：{verdict}")
+
+
+def cmd_audit(args):
+    v = _vault(args)
+    from .audit import audit
+
+    r = audit(v)
+    print(json.dumps(r, ensure_ascii=False, indent=2))
+    if not r["ok"]:
+        raise VaultError(f"审计发现 {len(r['violations'])} 处问题")
 
 
 def cmd_eval(args):
@@ -375,7 +461,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("interview", help="P3 模式 I：把你的口述转写稿按提纲整理，并做 CRIBS 标注（需 H3）")
     s.add_argument("hub")
-    s.add_argument("--transcript", required=True, help="口述转写稿（markdown / txt）")
+    s.add_argument("--transcript", help="口述转写稿（markdown / txt）")
+    s.add_argument("--audio", help="P4：音频文件，本地用 faster-whisper 转写（不上传）")
+    s.add_argument("--whisper-model", default="small")
     s.set_defaults(func=cmd_interview)
 
     s = sub.add_parser("promote", help="P3 R1：把一条表现好的短帖晋升为长文母稿")
@@ -390,6 +478,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("progress", help="P3 完成度：支撑率、编辑时长趋势、R1 长文数")
     s.set_defaults(func=cmd_progress)
+
+    s = sub.add_parser("flow", help="P4：用 LangGraph 跑整条流程，停在每个闸口等你（需 pip install -e '.[graph]'）")
+    s.add_argument("action", choices=["start", "resume", "status"])
+    s.add_argument("target", help="start：idea_id 或一句话选题或 hub_id；resume/status：hub_id")
+    s.add_argument("--do", help="resume 的动作：approve | redo | revise | done")
+    s.add_argument("--set", nargs="*", help="闸口字段 key=value，如 angle=2 excitement=4 edge=...")
+    s.set_defaults(func=cmd_flow)
+
+    s = sub.add_parser("survey", help="P4：读者调查 design / analyze")
+    s.add_argument("action", choices=["design", "analyze"])
+    s.add_argument("goal_or_id", nargs="?")
+    s.add_argument("responses", nargs="?", help="analyze：回答 CSV")
+    s.add_argument("--topic")
+    s.add_argument("-n", type=int, default=10)
+    s.set_defaults(func=cmd_survey)
+
+    s = sub.add_parser("blind", help="P4：作者盲评 AI 参与稿 vs 纯人写稿")
+    s.add_argument("action", choices=["prepare", "score"])
+    s.add_argument("batch", nargs="?")
+    s.add_argument("--ai", help="逗号分隔的 hub_id（AI 参与组）")
+    s.add_argument("--human", help="逗号分隔的 md 文件（纯人写组）")
+    s.set_defaults(func=cmd_blind)
+
+    s = sub.add_parser("audit", help="P4：审计——每次发布都经人工批准、没有自动互动、平台规则 90 天内核对过")
+    s.set_defaults(func=cmd_audit)
 
     s = sub.add_parser("eval", help="在离线测试集上检验评审能否区分好稿和差稿")
     s.set_defaults(func=cmd_eval)
