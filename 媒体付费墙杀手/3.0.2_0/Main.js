@@ -57,27 +57,16 @@ var Utils;
     Utils.NLFind = NLFind;
 })(Utils || (Utils = {}));
 /*
- * XHRequest
+ * XHRequest (fetch-based: MV3 service workers have no XMLHttpRequest)
  */
 var XHR;
 (function (XHR) {
     function get(url, responseType) {
-        return new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.responseType = responseType;
-            xhr.onerror = err => reject(err);
-            xhr.onreadystatechange = () => {
-                if (xhr.readyState === XMLHttpRequest.DONE) {
-                    if (xhr.status !== 200) {
-                        reject(xhr.status);
-                    }
-                    else {
-                        resolve(xhr.response);
-                    }
-                }
-            };
-            xhr.open("GET", url);
-            xhr.send(null);
+        return fetch(chrome.runtime.getURL(url)).then((response) => {
+            if (response.status !== 200) {
+                throw response.status;
+            }
+            return responseType === "json" ? response.json() : response.text();
         });
     }
     XHR.get = get;
@@ -206,7 +195,7 @@ var Cookies;
 var Fences;
 (function (Fences) {
     const MIN_DOMAIN_LEN = 2;
-    const BLOCK_LIST_SRC = "./DefaultBlockList.json";
+    const BLOCK_LIST_SRC = "DefaultBlockList.json";
     const FENCES = "fences";
     let cache = null;
     function get() {
@@ -338,7 +327,7 @@ var StorageArea;
  */
 var Tabs;
 (function (Tabs) {
-    const SCRIPT_SRC = "./Script.js";
+    const SCRIPT_SRC = "Script.js";
     function onUpdate(tabId, changeInfo) {
         if (changeInfo.status !== "loading") {
             return;
@@ -388,7 +377,7 @@ var Tabs;
         });
     }
     function inject(id, src) {
-        chrome.tabs.executeScript(id, { file: src });
+        chrome.scripting.executeScript({ target: { tabId: id }, files: [src] });
     }
 })(Tabs || (Tabs = {}));
 /*
@@ -396,8 +385,8 @@ var Tabs;
  */
 var UI;
 (function (UI) {
-    const ACTIVE_ICON = "./Assets/green_icon.png";
-    const INACTIVE_ICON = "./Assets/brown_icon.png";
+    const ACTIVE_ICON = "/Assets/green_icon.png";
+    const INACTIVE_ICON = "/Assets/brown_icon.png";
     function updateBrowserAction(tabId, policy) {
         let icon = null;
         const title = Localization.get(policy);
@@ -407,77 +396,21 @@ var UI;
         else {
             icon = INACTIVE_ICON;
         }
-        chrome.browserAction.setIcon({ tabId: tabId, path: icon });
-        chrome.browserAction.setTitle({ tabId: tabId, title: title });
+        chrome.action.setIcon({ tabId: tabId, path: icon });
+        chrome.action.setTitle({ tabId: tabId, title: title });
     }
     UI.updateBrowserAction = updateBrowserAction;
     function setBrowserActionStatus(tabId, url) {
         const isEnabled = url.startsWith("http");
         if (isEnabled) {
-            chrome.browserAction.enable(tabId);
+            chrome.action.enable(tabId);
         }
         else {
-            chrome.browserAction.disable(tabId);
+            chrome.action.disable(tabId);
         }
     }
     UI.setBrowserActionStatus = setBrowserActionStatus;
 })(UI || (UI = {}));
-/*
- * WebRequest
- */
-var WebRequest;
-(function (WebRequest) {
-    WebRequest.FILTER = { urls: ["<all_urls>"] };
-    WebRequest.BLOCKING_RESPONSE = ["blocking", "responseHeaders"];
-    const MAIN_FRAME = "main_frame";
-    const COOKIE_BLOCK_MAP = {
-        ["regular" /* regular */]: true,
-        ["power" /* power */]: true,
-        ["experimental" /* experimental */]: false,
-        ["none" /* none */]: false
-    };
-    const JS_BLOCK_MAP = {
-        ["regular" /* regular */]: false,
-        ["power" /* power */]: true,
-        ["experimental" /* experimental */]: true,
-        ["none" /* none */]: false
-    };
-    function onHeadersReceived(details) {
-        const domain = getDomain(details);
-        const response = { responseHeaders: details.responseHeaders };
-        return Fences.find(domain).then((fence) => {
-            if (COOKIE_BLOCK_MAP[fence.policy]) {
-                blockCookies(details.responseHeaders);
-            }
-            if (details.type !== MAIN_FRAME) {
-                return response;
-            }
-            if (JS_BLOCK_MAP[fence.policy]) {
-                blockJS(details.responseHeaders);
-            }
-            return response;
-        }).catch(err => {
-            console.error(err);
-            return response;
-        });
-    }
-    WebRequest.onHeadersReceived = onHeadersReceived;
-    function getDomain(details) {
-        let url = details.type === MAIN_FRAME ? details.url : details["originUrl"];
-        return Utils.getDomain(url);
-    }
-    function blockCookies(headers) {
-        headers.forEach((header, index) => {
-            if (header.name.toLowerCase() === "set-cookie") {
-                headers.splice(index, 1);
-            }
-        });
-    }
-    function blockJS(headers) {
-        const jsCSP = { name: "Content-Security-Policy", value: "script-src 'none';" };
-        headers.push(jsCSP);
-    }
-})(WebRequest || (WebRequest = {}));
 /// <reference path ="../Common/Fences.ts"/>
 /// <reference path ="../Common/Localization.ts"/>
 /// <reference path ="../Common/Messages.ts"/>
@@ -491,7 +424,6 @@ var WebRequest;
 /// <reference path ="./StorageArea.ts"/>
 /// <reference path ="./Tabs.ts"/>
 /// <reference path ="./UI.ts"/>
-/// <reference path ="./WebRequest.ts"/>
 /*
  * Main
  */
@@ -502,8 +434,9 @@ var Main;
         chrome.runtime.onMessage.addListener(Messages.onMessage);
         chrome.tabs.onUpdated.addListener(Tabs.onUpdate);
         if (!ContentSettings.isEnabled()) {
+            // MV3 has no blocking webRequest, so the Set-Cookie / CSP header rewriting
+            // fallback is gone; chrome.contentSettings is always present in Chrome.
             chrome.cookies.onChanged.addListener(Cookies.onChange);
-            chrome.webRequest.onHeadersReceived.addListener(WebRequest.onHeadersReceived, WebRequest.FILTER, WebRequest.BLOCKING_RESPONSE);
         }
     }
     (function main() {
