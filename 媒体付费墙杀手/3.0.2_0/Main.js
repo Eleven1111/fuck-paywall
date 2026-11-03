@@ -264,6 +264,15 @@ var Fences;
 var Install;
 (function (Install) {
     function onInstalled(details) {
+        // Apply the saved fences (or DefaultBlockList.json on first install) to
+        // chrome.contentSettings right away. Previously this only happened after the
+        // user picked a policy in the popup, so the default list never blocked JS/cookies.
+        // contentSettings persist across browser restarts, so install/update is enough.
+        Fences.get().then((fences) => {
+            return ContentSettings.set(fences);
+        }).catch(err => {
+            console.error(err);
+        });
     }
     Install.onInstalled = onInstalled;
 })(Install || (Install = {}));
