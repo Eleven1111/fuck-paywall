@@ -1,5 +1,7 @@
 # creator-agent · 多平台创作 Agent（P1–P4）
 
+> **第一次用？先看 [从零开始的使用教程](TUTORIAL.md)。**
+
 按《[三平台创作 Agent 手册·核实版](../reports/三平台创作Agent手册核实版.md)》第三部分的路线图，实现 **P0 建库 + P1 MVP**：
 
 > 一个母站（Substack）加两个辐条（X 单帖、Substack Notes）；研究用单 Agent 加搜索；**全部人工发布**；带 UTM 生成器、离线测试集和人工编辑时长记录。

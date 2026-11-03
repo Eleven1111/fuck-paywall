@@ -268,7 +268,7 @@ def cmd_flow(args):
     llm = _llm(v)
     if args.action == "start":
         hub = args.target
-        if not hub.startswith("20"):
+        if not (v.root / "hubs" / hub / "meta.json").exists():
             idea = v.idea(hub) if hub.startswith("idea_") else v.add_idea(hub)
             hub = v.new_hub(idea)
         waiting = graph.start(v, llm, hub)
@@ -346,7 +346,7 @@ def cmd_eval(args):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="ca", description="多平台创作 Agent（P1 MVP）")
+    p = argparse.ArgumentParser(prog="ca", description="多平台创作 Agent（P1–P4）：所有发布都由你本人完成")
     p.add_argument("--vault", help="知识库目录（默认 $CA_VAULT 或 ./creator-vault）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -387,7 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--mode", choices=["A", "B", "I"])
     s.set_defaults(func=cmd_draft)
 
-    s = sub.add_parser("adapt", help="S6 平台适配：x_post + substack_note（需 H4）")
+    s = sub.add_parser("adapt", help="S6 平台适配：X 单帖 / Notes / Thread / Article / Medium（需 H4）")
     s.add_argument("hub")
     s.add_argument("--x", type=int, default=5)
     s.add_argument("--notes", type=int, default=5)
