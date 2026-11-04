@@ -1,5 +1,22 @@
 # 干掉付费墙
 这个库是一些扩展的集合。
+
+## 安装（Chrome / Edge 等 Chromium 浏览器）
+新版 Chrome 已经不支持 Manifest V2 扩展，下面两个扩展都已迁移到 **Manifest V3**。安装方法：
+1. 下载或 clone 本仓库；
+2. 打开 `chrome://extensions`，打开右上角的「开发者模式」；
+3. 点「加载已解压的扩展程序」，选择扩展所在的目录：
+   - bypass-paywalls：`bypass-paywalls/bypass-paywalls-chrome-master`
+   - 媒体付费墙杀手：`媒体付费墙杀手/3.0.2_0`
+
+注意：目录里的 `.crx` 文件是原来的 MV2 版本，新版 Chrome 装不上，仅作存档。
+
+## 测试
+`tests/` 里是离线测试：用本地服务器模拟各新闻站，在 Chromium 里加载扩展，检查改 Referer、去 Cookie、拦截付费墙脚本、WSJ 重定向等行为；油猴脚本用模拟页面测试。每次 push 和 PR 都会在 GitHub Actions 上自动运行。本地运行（测试服务器要监听 80/443 端口，非 root 用户会用 sudo 启动）：
+```bash
+cd tests && npm ci && npx playwright install chromium && npm test
+```
+这些测试只能保证扩展的逻辑没坏，不能保证对真实网站仍然有效。
 ## bypass-paywalls
 这个插件十分有用，对绝大多数常见英文媒体都有效。（华尔街日报抽风时可以用下面的油猴脚本，经济学人只需要把javascript禁用就行了）  
 这是原本的repo链接 https://github.com/iamadamdev/bypass-paywalls-chrome  

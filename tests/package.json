@@ -1,0 +1,13 @@
+{
+  "name": "fuck-paywall-tests",
+  "private": true,
+  "description": "Offline tests for the extensions and userscript in this repository",
+  "scripts": {
+    "test": "bash run.sh"
+  },
+  "devDependencies": {
+    "jquery": "3.7.1",
+    "jquery-1.11.1": "npm:jquery@1.11.1",
+    "playwright": "1.63.0"
+  }
+}

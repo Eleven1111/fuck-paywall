@@ -106,44 +106,177 @@ const remove_cookies = [
 'washingtonpost.com',
 ]
 
+
+// Requests to these hosts are blocked when they come from (or go to) an enabled site.
+// MV2 used regexes on the request URL; MV3 uses declarativeNetRequest block rules.
+const blockedRequests = [
+  // Tribune Publishing paywall scripts, loaded by the Tribune papers
+  { urlFilter: '||tribdss.com/', initiatorSites: ['baltimoresun.com', 'chicagotribune.com', 'courant.com', 'dailypress.com', 'latimes.com', 'mcall.com', 'orlandosentinel.com', 'sun-sentinel.com'] },
+  { regexFilter: 'thenation\\.com/.+/paywall-script\\.php', site: 'thenation.com' },
+  { regexFilter: 'haaretz\\.co\\.il/htz/js/inter\\.js', site: 'haaretz.co.il' }
+];
+
+// Sites that get Facebook as the referer instead of Google
+const facebookReferer = ['wsj.com', 'ft.com'];
+
+const ALL_RESOURCE_TYPES = [
+  'main_frame', 'sub_frame', 'stylesheet', 'script', 'image', 'font', 'object',
+  'xmlhttprequest', 'ping', 'csp_report', 'media', 'websocket', 'webtransport',
+  'webbundle', 'other'
+];
+
+// Rule priorities: header rules must outrank the WSJ "allow" rule, which in turn
+// outranks the WSJ redirect (so an URL that already has mod=rsswn is not redirected again).
+const PRIORITY_HEADERS = 3;
+const PRIORITY_ALLOW = 2;
+const PRIORITY_DEFAULT = 1;
+
+const CONTENT_SCRIPT_ID = 'bypass-paywalls-content';
+
 function setDefaultOptions() {
   chrome.storage.sync.set({
     sites: defaultSites
   }, function() {
-    chrome.tabs.create({ 'url': 'chrome://extensions/?options=' + chrome.runtime.id });
+    chrome.runtime.openOptionsPage();
   });
 }
 
-
-var blockedRegexes = [
-/.+:\/\/.+\.tribdss\.com\//,
-/thenation\.com\/.+\/paywall-script\.php/,
-/haaretz\.co\.il\/htz\/js\/inter\.js/
-];
-
-var enabledSites = [];
-
-// Get the enabled sites
-chrome.storage.sync.get({
-  sites: {}
-}, function(items) {
-  var sites = items.sites;
-  enabledSites = Object.keys(items.sites).map(function(key) {
-    return items.sites[key];
+function getEnabledSites() {
+  return new Promise(function(resolve) {
+    chrome.storage.sync.get({ sites: {} }, function(items) {
+      resolve(Object.keys(items.sites).map(function(key) {
+        return items.sites[key];
+      }));
+    });
   });
-});
+}
+
+// Build the declarativeNetRequest condition that matches requests to an enabled site
+function siteCondition(site) {
+  if (site in restrictions) {
+    return { urlFilter: '||' + restrictions[site], resourceTypes: ALL_RESOURCE_TYPES };
+  }
+  return { requestDomains: [site], resourceTypes: ALL_RESOURCE_TYPES };
+}
+
+function buildRules(enabledSites) {
+  var rules = [];
+  var id = 1;
+
+  enabledSites.forEach(function(site) {
+    // Set referer to Google (or Facebook), and strip cookies unless the site needs them
+    var requestHeaders = [{
+      header: 'referer',
+      operation: 'set',
+      value: facebookReferer.includes(site) ? 'https://www.facebook.com/' : 'https://www.google.com/'
+    }];
+    if (!allow_cookies.includes(site)) {
+      requestHeaders.push({ header: 'cookie', operation: 'remove' });
+    }
+    rules.push({
+      id: id++,
+      priority: PRIORITY_HEADERS,
+      action: { type: 'modifyHeaders', requestHeaders: requestHeaders },
+      condition: siteCondition(site)
+    });
+  });
+
+  blockedRequests.forEach(function(blocked) {
+    var condition = { resourceTypes: ALL_RESOURCE_TYPES };
+    if (blocked.urlFilter) {
+      condition.urlFilter = blocked.urlFilter;
+    } else {
+      condition.regexFilter = blocked.regexFilter;
+    }
+    if (blocked.initiatorSites) {
+      var initiators = blocked.initiatorSites.filter(function(site) {
+        return enabledSites.includes(site);
+      });
+      if (!initiators.length) {
+        return;
+      }
+      condition.initiatorDomains = initiators;
+    } else if (!enabledSites.includes(blocked.site)) {
+      return;
+    }
+    rules.push({ id: id++, priority: PRIORITY_DEFAULT, action: { type: 'block' }, condition: condition });
+  });
+
+  // WSJ bypass: add mod=rsswn to article URLs
+  if (enabledSites.includes('wsj.com')) {
+    rules.push({
+      id: id++,
+      priority: PRIORITY_ALLOW,
+      action: { type: 'allow' },
+      condition: { urlFilter: 'mod=rsswn', requestDomains: ['wsj.com'], resourceTypes: ['main_frame'] }
+    });
+    rules.push({
+      id: id++,
+      priority: PRIORITY_DEFAULT,
+      action: {
+        type: 'redirect',
+        redirect: { transform: { fragment: '', queryTransform: { addOrReplaceParams: [{ key: 'mod', value: 'rsswn' }] } } }
+      },
+      condition: { requestDomains: ['wsj.com'], resourceTypes: ['main_frame'] }
+    });
+  }
+
+  return rules;
+}
+
+// Content script (clears localStorage etc.) only runs on enabled sites
+function buildContentScriptMatches(enabledSites) {
+  var matches = [];
+  enabledSites.forEach(function(site) {
+    var path = '/*';
+    var host = site;
+    if (site in restrictions) {
+      var restriction = restrictions[site];
+      host = restriction.split('/')[0];
+      path = restriction.substring(host.length) + '*';
+    }
+    matches.push('*://' + host + path, '*://*.' + host + path);
+  });
+  return matches;
+}
+
+async function syncRules() {
+  var enabledSites = await getEnabledSites();
+
+  var oldRules = await chrome.declarativeNetRequest.getDynamicRules();
+  await chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: oldRules.map(function(rule) { return rule.id; }),
+    addRules: buildRules(enabledSites)
+  });
+
+  var registered = await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID] });
+  if (registered.length) {
+    await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
+  }
+  var matches = buildContentScriptMatches(enabledSites);
+  if (matches.length) {
+    await chrome.scripting.registerContentScripts([{
+      id: CONTENT_SCRIPT_ID,
+      js: ['contentScript.js'],
+      matches: matches,
+      runAt: 'document_start'
+    }]);
+  }
+}
+
+// Serialize syncs so overlapping storage changes don't race each other
+var syncQueue = Promise.resolve();
+function queueSync() {
+  syncQueue = syncQueue.then(syncRules).catch(function(err) {
+    console.error('Failed to update rules:', err);
+  });
+  return syncQueue;
+}
 
 // Listen for changes to options
 chrome.storage.onChanged.addListener(function(changes, namespace) {
-  var key;
-  for (key in changes) {
-    var storageChange = changes[key];
-    if (key === 'sites') {
-      var sites = storageChange.newValue;
-      enabledSites = Object.keys(sites).map(function(key) {
-        return sites[key];
-      });
-    }
+  if ('sites' in changes) {
+    queueSync();
   }
 });
 
@@ -151,156 +284,27 @@ chrome.storage.onChanged.addListener(function(changes, namespace) {
 chrome.runtime.onInstalled.addListener(function (details) {
   if (details.reason == "install") {
     setDefaultOptions();
-  } else if (details.reason == "update") {
-    // User updated extension
+  } else {
+    // Extension updated (e.g. from the MV2 version): rebuild rules from saved options
+    queueSync();
   }
 });
 
-// WSJ bypass
-chrome.webRequest.onBeforeRequest.addListener(function (details) {
-  if (!isSiteEnabled(details) || details.url.indexOf("mod=rsswn") !== -1) {
-    return;
-  }
-
-  var param;
-  var updatedUrl;
-
-  param = getParameterByName("mod", details.url);
-
-  if (param === null) {
-    updatedUrl = stripQueryStringAndHashFromPath(details.url);
-    updatedUrl += "?mod=rsswn";
-  } else {
-    updatedUrl = details.url.replace(param, "rsswn");
-  }
-  return { redirectUrl: updatedUrl};
-},
-{urls:["*://*.wsj.com/*"], types:["main_frame"]},
-["blocking"]
-);
-
-chrome.webRequest.onBeforeSendHeaders.addListener(function(details) {
-  if (!isSiteEnabled(details)) {
-    return;
-  }
-
-  if (blockedRegexes.some(function(regex) { return regex.test(details.url); })) {
-    return { cancel: true };
-  }
-
-  var requestHeaders = details.requestHeaders;
-  var tabId = details.tabId;
-
-  var setReferer = false;
-
-  // if referer exists, set it to google
-  requestHeaders = requestHeaders.map(function(requestHeader) {
-    if (requestHeader.name === 'Referer') {
-      if (details.url.indexOf("wsj.com") !== -1 || details.url.indexOf("ft.com") !== -1) {
-       requestHeader.value = 'https://www.facebook.com/';
-     } else {
-       requestHeader.value = 'https://www.google.com/';
-     }
-
-     setReferer = true;
-   }
-   return requestHeader;
- });
-
-  // otherwise add it
-  if (!setReferer) {
-    if (details.url.indexOf("wsj.com") !== -1) {
-      requestHeaders.push({
-        name: 'Referer',
-        value: 'https://www.facebook.com/'
-      });
-    } else {
-      requestHeaders.push({
-        name: 'Referer',
-        value: 'https://www.google.com/'
-      });
-    }
-
-  }
-
-  // remove cookies before page load
-  requestHeaders = requestHeaders.map(function(requestHeader) {
-    for (var siteIndex in allow_cookies) {
-      if (details.url.indexOf(allow_cookies[siteIndex]) !== -1) {
-        return requestHeader;
-      }
-    }
-    if (requestHeader.name === 'Cookie') {
-      requestHeader.value = '';
-    }
-    return requestHeader;
-  });
-
-  if (tabId !== -1) {
-    // run contentScript inside tab
-    chrome.tabs.executeScript(tabId, {
-      file: 'contentScript.js',
-      runAt: 'document_start'
-    }, function(res) {
-      if (chrome.runtime.lastError || res[0]) {
-        return;
-      }
-    });
-  }
-
-  return { requestHeaders: requestHeaders };
-}, {
-  urls: ['<all_urls>']
-}, ['blocking', 'requestHeaders', 'extraHeaders']);
+chrome.runtime.onStartup.addListener(queueSync);
 
 // remove cookies after page load
-chrome.webRequest.onCompleted.addListener(function(details) {
-  for (var domainIndex in remove_cookies) {
-    var domainVar = remove_cookies[domainIndex];
+chrome.webRequest.onCompleted.addListener(async function(details) {
+  var enabledSites = await getEnabledSites();
+  remove_cookies.forEach(function(domainVar) {
     if (!enabledSites.includes(domainVar) || details.url.indexOf(domainVar) === -1) {
-      continue; // don't remove cookies
+      return; // don't remove cookies
     }
     chrome.cookies.getAll({domain: domainVar}, function(cookies) {
       for (var i=0; i<cookies.length; i++) {
-        chrome.cookies.remove({url: (cookies[i].secure ? "https://" : "http://") + cookies[i].domain + cookies[i].path, name: cookies[i].name});
+        chrome.cookies.remove({url: (cookies[i].secure ? "https://" : "http://") + cookies[i].domain.replace(/^\./, "") + cookies[i].path, name: cookies[i].name});
       }
     });
-  }
+  });
 }, {
   urls: ["<all_urls>"]
 });
-
-var _gaq = _gaq || [];
-_gaq.push(['_setAccount', 'UA-69824169-2']);
-_gaq.push(['_trackPageview']);
-
-(function() {
-  var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
-  ga.src = 'https://ssl.google-analytics.com/ga.js';
-  var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
-})();
-
-function isSiteEnabled(details) {
-  var isEnabled = enabledSites.some(function(enabledSite) {
-    var useSite = details.url.indexOf("." + enabledSite) !== -1;
-    if (enabledSite in restrictions) {
-      return useSite && details.url.indexOf(restrictions[enabledSite]) !== -1;
-    }
-    return useSite;
-  });
-  return isEnabled;
-}
-
-function getParameterByName(name, url) {
-  if (!url) url = window.location.href;
-  name = name.replace(/[\[\]]/g, '\\$&');
-  var regex = new RegExp('[?&]' + name + '(=([^&#]*)|&|#|$)'),
-  results = regex.exec(url);
-  if (!results) return null;
-  if (!results[2]) return '';
-  return decodeURIComponent(results[2].replace(/\+/g, ' '));
-}
-
-function stripQueryStringAndHashFromPath(url) {
-  return url.split("?")[0].split("#")[0];
-}
